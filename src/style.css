@@ -73,3 +73,14 @@ main{grid-template-rows:auto auto}
 #panel-rec .rec-row{flex:0 0 auto}
 main{flex:1 1 auto;grid-template-rows:minmax(300px,1fr) minmax(300px,1fr)}
 @media (max-width:1000px){main{grid-template-rows:none}}
+
+#ch-warn{color:var(--mid);font-size:12px;min-height:0;margin-bottom:4px}#ch-warn:empty{display:none}
+#cmp-note{white-space:pre-line}
+
+/* fixed-height top row (EEG + band power); only the bottom row grows with the experiment results */
+main{grid-template-rows:clamp(400px,52vh,560px) auto;align-content:start}
+#cv-bands{min-height:140px}
+@media (max-width:1000px){main{grid-template-rows:none}}
+#extras{align-self:start}
+#extras #panel-spec{flex:0 0 auto}
+#extras #cv-spec{flex:0 0 auto;height:min(300px,32vh);min-height:180px}

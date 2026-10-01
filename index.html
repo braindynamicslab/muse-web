@@ -44,10 +44,22 @@
   <section id="panel-bands" class="panel layer" data-layer="bands" hidden>
     <div class="panel-head">
       <h2>Band power</h2>
-      <span class="sub">share of brain-rhythm power, last 60 s</span>
+      <label class="sub">Power
+        <select id="pwr-mode">
+          <option value="relative">Relative (share, %)</option>
+          <option value="absolute">Absolute (dB)</option>
+        </select></label>
+      <label class="sub">Channels
+        <select id="ch-mode">
+          <option value="weighted">Best contact (auto)</option>
+          <option value="posterior">Back of head: TP9 + TP10</option>
+          <option value="frontal">Forehead: AF7 + AF8</option>
+          <option value="all">All four</option>
+        </select></label>
       <div class="spacer"></div>
-      <label class="sub"><input type="checkbox" id="chk-delta"> include delta (movement-prone)</label>
+      <label class="sub" id="delta-label"><input type="checkbox" id="chk-delta"> include delta</label>
     </div>
+    <div id="ch-warn"></div>
     <div id="band-chips"></div>
     <canvas id="cv-bands"></canvas>
     <div id="band-note" class="sub"></div>

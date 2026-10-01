@@ -3,6 +3,7 @@ import SimulatedMuse from './sim.js'
 import { BandPipeline, HeartRate, BANDS, SPEC_BINS } from './dsp.js'
 import { HSI, LEVEL, REASON } from './quality.js'
 import { makeZip } from './zip.js'
+import { SampleClock } from './clock.js'
 
 // ---------- constants ----------
 const FS = 256                 // EEG sample rate
@@ -62,6 +63,7 @@ const rec = { t0: null, rows: [], blocks: [], current: null, blockT0: 0, selecte
               bandRows: [], bandHist: [], specRows: [], accRows: [], ppgRows: [], quality: [] }
 const spec = { cols: [] }
 let lastTs = 0, batteryPct = null
+const clock = new SampleClock(FS)
 let client = null, subs = [], connected = false, simulated = false
 
 const blockAge = () => (rec.current ? (lastTs - rec.blockT0) / 1000 : 0)
@@ -73,12 +75,11 @@ hsi.onUpdate = (levels, detail) => {
   pipe.quality = levels.map((l) => LEVEL_TO_Q[l])
   rec.quality.push([lastTs - rec.t0, ...levels, ...detail.map((q) => q.p2p)])
 }
-pipe.onBands = (bp, ready) => {
-  if (!ready) return
-  const vals = BANDS.map((b) => bp[b])
-  rec.bandHist.push({ t: lastTs, vals })
+pipe.onBands = (bp, ready, abs) => {
+  const vals = BANDS.map((b) => bp[b]), absv = BANDS.map((b) => abs[b])
+  rec.bandHist.push({ t: lastTs, vals, abs: absv, ready })
   while (rec.bandHist.length && lastTs - rec.bandHist[0].t > BAND_WIN_MS + 5000) rec.bandHist.shift()
-  rec.bandRows.push({ t: lastTs - rec.t0, cond: rec.current || '', age: blockAge(), vals })
+  rec.bandRows.push({ t: lastTs - rec.t0, cond: rec.current || '', age: blockAge(), vals, abs: absv, ready, ch: pipe.channelMode })
 }
 
 // ---------- connection ----------
@@ -102,7 +103,8 @@ async function connect(simulate) {
   subs.push(zipSamples(client.eegReadings).subscribe((s) => onEegSample(s)))
   subs.push(client.ppgReadings.subscribe((r) => {
     if (r.ppgChannel !== 1) return
-    r.samples.forEach((v, i) => { hr.push(v); if (rec.t0 !== null) rec.ppgRows.push([r.timestamp + (i * 1000) / 64 - rec.t0, v, rec.current || '']) })
+    const arrival = Date.now(), m = r.samples.length     // arrival-based, like accelerometer (muse-js PPG timestamps share the broken counter)
+    r.samples.forEach((v, i) => { hr.push(v); if (rec.t0 !== null) rec.ppgRows.push([arrival - ((m - 1 - i) * 1000) / 64 - rec.t0, v, rec.current || '']) })
   }))
   subs.push(client.accelerometerData.subscribe((r) => {
     const arrival = Date.now(), m = r.samples.length     // accelerometer packets carry no timestamp
@@ -133,7 +135,7 @@ function setStatus(msg, on = false) { const el = $('status'); el.textContent = m
 function resetData() {
   eeg.n = 0; eeg.hpInit = false; eeg.disp.forEach((x) => x.fill(0)); eeg.t.fill(0)
   pipe.reset(); hr.reset()
-  spec.cols = []; hsi.reset(); acc.n = 0; batteryPct = null
+  spec.cols = []; hsi.reset(); clock.reset(); acc.n = 0; batteryPct = null
   rec.rows = []; rec.blocks = []; rec.current = null; rec.bandRows = []; rec.bandHist = []; rec.specRows = []; rec.accRows = []; rec.ppgRows = []; rec.quality = []
   updateCurrentUi(); updateBattery()
 }
@@ -142,10 +144,11 @@ function resetData() {
 const hpA = 1 / (1 + 2 * Math.PI * HP_FC / FS)
 function onEegSample(s) {
   const d = s.data
-  if (rec.t0 === null) rec.t0 = s.timestamp
-  lastTs = s.timestamp
+  const ts = clock.stamp(s.index)      // our own clock — muse-js timestamps are unreliable (see clock.js)
+  if (rec.t0 === null) rec.t0 = ts
+  lastTs = ts
   const i = eeg.n % N
-  eeg.t[i] = s.timestamp
+  eeg.t[i] = ts
   for (let c = 0; c < 4; c++) {
     const x = Number.isNaN(d[c]) ? 0 : d[c]
     if (!eeg.hpInit) { eeg.hpX[c] = x; eeg.hpY[c] = 0 }
@@ -157,7 +160,7 @@ function onEegSample(s) {
   eeg.n++
   hsi.push(d)
   pipe.push(d)     // analysis pipeline sees the raw samples (nouscope: no filtering)
-  rec.rows.push([s.timestamp - rec.t0, d[0], d[1], d[2], d[3], rec.current || ''])
+  rec.rows.push([ts - rec.t0, d[0], d[1], d[2], d[3], rec.current || ''])
 }
 
 // ---------- quality UI (muse-lsl HSI) ----------
@@ -168,12 +171,26 @@ function updateQuality() {
     const d = hsi.detail[c]
     if (l > 0) hint.push(`${CH[c]} (${CH_INFO[c]}): ${d.raw > 0 ? REASON[d.worst] : 'looks better now — hold still a few seconds'}`)
   })
+  updateChannelWarning()
   $('fit-hint').textContent = hint.length ? hint.join('  ·  ') : 'All four contacts look good. Sit still for a few seconds.'
   document.querySelectorAll('#quality .q').forEach((el, c) => {
     const d = hsi.detail[c]
     el.className = `q ${LEVEL_TO_Q[hsi.levels[c]]}`
     el.title = `${LEVEL[hsi.levels[c]]} — amplitude ${d.p2p.toFixed(0)} µV p-p · muscle ${d.muscle.toFixed(2)} · line noise ${d.line.toFixed(1)}× · clipping ${(d.sat * 100).toFixed(0)}% · drift ${d.drift.toFixed(2)}`
   })
+}
+const CH_MODE_LABEL = { weighted: 'best-contact channels', posterior: 'TP9 + TP10', frontal: 'AF7 + AF8', all: 'all four channels' }
+function updateChannelWarning() {
+  const poor = CH.filter((_, c) => hsi.levels[c] === 2)
+  let msg = ''
+  if (pipe.channelMode === 'weighted') {
+    if (poor.length >= 2) msg = `${poor.join(' and ')} have poor contact and are being left out — these results come from the remaining channels only.`
+  } else {
+    const idx = { posterior: [0, 3], frontal: [1, 2], all: [0, 1, 2, 3] }[pipe.channelMode]
+    const bad = idx.filter((c) => hsi.levels[c] === 2).map((c) => CH[c])
+    if (bad.length) msg = `${bad.join(' and ')} ${bad.length > 1 ? 'have' : 'has'} poor contact but ${bad.length > 1 ? 'are' : 'is'} still included — treat these results with caution.`
+  }
+  $('ch-warn').textContent = msg
 }
 $('quality').innerHTML = CH.map((n) => `<span class="q"><i></i>${n}</span>`).join('')
 function updateBattery() {
@@ -272,24 +289,42 @@ function drawSpec() {
   for (const f of [8, 13]) { g.beginPath(); g.moveTo(0, h - f * rh); g.lineTo(w, h - f * rh); g.stroke() }
   g.setLineDash([])
 }
+const isAbs = () => $('pwr-mode').value === 'absolute'
 function drawBands() {
   if (!layerState.bands) return
   const [g, w, h] = fit($('cv-bands'))
   g.clearRect(0, 0, w, h)
-  const withDelta = pipe.normalizeBands.has('delta')
-  const cur = pipe.bandPower
-  $('band-chips').innerHTML = BANDS.map((b) => `<span class="chip${b === 'delta' && !withDelta ? ' off' : ''}"><i style="background:${BAND_COLORS[b]}"></i>${BAND_LABEL[b]} <b>${pipe.ready && (b !== 'delta' || withDelta) ? Math.round(cur[b] * 100) + '%' : '–'}</b></span>`).join('')
+  const abs = isAbs()
+  const withDelta = abs || pipe.normalizeBands.has('delta')
+  const cur = pipe.bandPower, curAbs = pipe.bandAbs, have = eeg.n > FS
+  $('band-chips').innerHTML = BANDS.map((b) => {
+    const off = b === 'delta' && !withDelta
+    const txt = abs ? (have ? `${curAbs[b].toFixed(1)} dB` : '–') : (pipe.ready && !off ? `${Math.round(cur[b] * 100)}%` : '–')
+    return `<span class="chip${off ? ' off' : ''}"><i style="background:${BAND_COLORS[b]}"></i>${BAND_LABEL[b]} <b>${txt}</b></span>`
+  }).join('')
   const note = $('band-note')
   if (!connected && !rec.bandHist.length) note.textContent = 'Connect to see band power.'
+  else if (abs) note.textContent = `Absolute power of ${CH_MODE_LABEL[pipe.channelMode]}, in dB re 1 µV² (+3 dB ≈ twice the power). Each band is compared with its own earlier values — bands are not comparable in height. Gamma here is 30–40 Hz.`
   else if (!pipe.ready) note.textContent = `Calibrating the 1/f background model… ${Math.round(pipe.warmupFraction * 100)}% (about 15 s after connecting). Sit still.`
-  else note.textContent = 'Shares add to 100%. A band rising means it gained power relative to the others, after correcting for the 1/f slope.'
-  g.font = '11px sans-serif'
-  for (const y of [0, 0.25, 0.5, 0.75, 1]) {
-    const py = h - 14 - y * (h - 20)
-    g.strokeStyle = '#1f2633'; g.beginPath(); g.moveTo(30, py); g.lineTo(w, py); g.stroke()
-    g.fillStyle = '#8b95a8'; g.fillText(`${Math.round(y * 100)}%`, 2, py + 4)
+  else note.textContent = 'Shares add to 100%. A band rising means it gained power relative to the others, after correcting for the 1/f slope. Try Absolute for the raw change.'
+  const hist = rec.bandHist.filter((p) => abs || p.ready)
+  // y range
+  let lo = 0, hi = 1, fmtY = (v) => `${Math.round(v * 100)}%`
+  if (abs) {
+    const vis = []
+    for (const p of hist) BANDS.forEach((b, i) => { if (p.abs[i] > -90) vis.push(p.abs[i]) })
+    lo = vis.length ? Math.floor(Math.min(...vis) - 1) : 0; hi = vis.length ? Math.ceil(Math.max(...vis) + 1) : 10
+    if (hi - lo < 6) { const m = (hi + lo) / 2; lo = m - 3; hi = m + 3 }
+    fmtY = (v) => `${v.toFixed(0)}`
   }
-  const hist = rec.bandHist; if (hist.length < 2) return
+  const yOf = (v) => h - 14 - ((v - lo) / (hi - lo)) * (h - 20)
+  g.font = '11px sans-serif'
+  for (const f of [0, 0.25, 0.5, 0.75, 1]) {
+    const v = lo + f * (hi - lo), py = yOf(v)
+    g.strokeStyle = '#1f2633'; g.beginPath(); g.moveTo(30, py); g.lineTo(w, py); g.stroke()
+    g.fillStyle = '#8b95a8'; g.fillText(fmtY(v), 2, py + 4)
+  }
+  if (hist.length < 2) return
   const tR = hist[hist.length - 1].t
   const xOf = (t) => 30 + (w - 30) * (1 - (tR - t) / BAND_WIN_MS)
   drawBlocks(g, xOf, 30, w, h - 14, 12)
@@ -299,7 +334,8 @@ function drawBands() {
     let first = true
     for (const p of hist) {
       const x = xOf(p.t); if (x < 30) continue
-      const y = h - 14 - Math.min(1, p.vals[bi]) * (h - 20)
+      const v = abs ? p.abs[bi] : Math.min(1, p.vals[bi])
+      const y = yOf(v)
       first ? g.moveTo(x, y) : g.lineTo(x, y); first = false
     }
     g.stroke(); g.lineWidth = 1
@@ -391,27 +427,33 @@ $('btn-stop').addEventListener('click', endBlock)
 function updateSummary() {
   const el = $('summary')
   if (!layerState.bands) { el.hidden = true; return }
+  const abs = isAbs()
   const groups = new Map()
   for (const r of rec.bandRows) {
-    if (!r.cond || r.age < SETTLE_S) continue
+    if (!r.cond || r.age < SETTLE_S || (!abs && !r.ready)) continue
     if (!groups.has(r.cond)) groups.set(r.cond, { n: 0, sum: [0, 0, 0, 0, 0] })
-    const g = groups.get(r.cond); g.n++; r.vals.forEach((v, i) => { g.sum[i] += v })
+    const g = groups.get(r.cond); g.n++; (abs ? r.abs : r.vals).forEach((v, i) => { g.sum[i] += v })
   }
   if (!groups.size) { el.hidden = true; return }
-  const withDelta = pipe.normalizeBands.has('delta')
+  const withDelta = abs || pipe.normalizeBands.has('delta')
   const cols = BANDS.map((b, i) => [b, i]).filter(([b]) => b !== 'delta' || withDelta)
   const rows = [...groups.entries()], base = rows[0][1]
-  let html = '<table><tr><th>Condition (mean band share)</th><th>time</th>' + cols.map(([b]) => `<th style="color:${BAND_COLORS[b]}">${BAND_LABEL[b].split(' ')[0]}</th>`).join('') + '</tr>'
+  let html = `<table><tr><th>Condition (mean ${abs ? 'band power, dB' : 'band share'})</th><th>time</th>` + cols.map(([b]) => `<th style="color:${BAND_COLORS[b]}">${BAND_LABEL[b].split(' ')[0]}</th>`).join('') + '</tr>'
   rows.forEach(([name, g], ri) => {
     html += `<tr><td>${name}${ri === 0 ? ' <span class="sub">(reference)</span>' : ''}</td><td>${Math.round(g.n / 2)} s</td>` + cols.map(([b, i]) => {
       const m = g.sum[i] / g.n, m0 = base.sum[i] / base.n
+      if (abs) {
+        if (ri === 0) return `<td>${m.toFixed(1)}</td>`
+        const d = m - m0
+        return `<td>${m.toFixed(1)} <span class="${d > 0.05 ? 'up' : d < -0.05 ? 'down' : ''}">(${d > 0 ? '+' : ''}${d.toFixed(1)} dB)</span></td>`
+      }
       const pct = Math.round(m * 100)
       if (ri === 0 || m0 <= 0) return `<td>${pct}%</td>`
       const d = Math.round((m / m0 - 1) * 100)
       return `<td>${pct}% <span class="${d > 0 ? 'up' : d < 0 ? 'down' : ''}">(${d > 0 ? '+' : ''}${d}%)</span></td>`
     }).join('') + '</tr>'
   })
-  el.innerHTML = html + '</table><div class="sub">Change in brackets is relative to the first condition you ran. The first 2 s of each block are ignored. Band values start ~15 s after connecting.</div>'
+  el.innerHTML = html + `</table><div class="sub">Change in brackets is relative to the first condition you ran. The first 2 s of each block are ignored.${abs ? '' : ' Relative values start ~15 s after connecting.'}</div>`
   el.hidden = false
 }
 
@@ -422,6 +464,17 @@ function condSpectrum(cond) {
   const m = new Float32Array(SPEC_BINS)
   for (const r of rows) for (let f = 0; f < SPEC_BINS; f++) m[f] += r.col[f] / rows.length
   return { m, n: rows.length }
+}
+/** Alpha peak above the 1/f background: fit a line (log f vs dB) to 2–6 and 15–35 Hz, take the largest residual in 7–14 Hz. */
+function alphaPeak(db) {
+  const xs = [], ys = []
+  for (let f = 2; f <= 35; f++) if (f <= 6 || f >= 15) { xs.push(Math.log10(f)); ys.push(db[f - 1]) }
+  const n = xs.length; let sx = 0, sy = 0, sxx = 0, sxy = 0
+  for (let i = 0; i < n; i++) { sx += xs[i]; sy += ys[i]; sxx += xs[i] * xs[i]; sxy += xs[i] * ys[i] }
+  const b = (n * sxy - sx * sy) / (n * sxx - sx * sx), a = (sy - b * sx) / n
+  let best = { f: 0, res: -Infinity }
+  for (let f = 7; f <= 14; f++) { const res = db[f - 1] - (a + b * Math.log10(f)); if (res > best.res) best = { f, res } }
+  return best
 }
 function updateCompareOptions() {
   const names = [...new Set(rec.specRows.filter((r) => r.age >= SETTLE_S).map((r) => r.cond))].filter((n) => condSpectrum(n))
@@ -463,7 +516,9 @@ function drawCompare() {
   g.fillText('Hz', w - 18, h - 2)
   const bandDiff = (lo, hi2) => { let s = 0, n = 0; for (let f = lo; f < hi2; f++) { s += diff[f - 1]; n++ } return s / n }
   const fmt = (v) => `${v > 0 ? '+' : ''}${v.toFixed(1)} dB`
-  $('cmp-note').textContent = `B vs A — theta ${fmt(bandDiff(4, 8))} · alpha ${fmt(bandDiff(8, 13))} · beta ${fmt(bandDiff(13, 30))}  (3 dB ≈ 2× power; A used ${A.n / 2} s, B ${B.n / 2} s)`
+  const pa = alphaPeak(dbA), pb = alphaPeak(dbB)
+  const pk = (p) => (p.res >= 1 ? `${p.f} Hz, ${p.res.toFixed(1)} dB above background` : 'no clear peak (< 1 dB above background)')
+  $('cmp-note').textContent = `B vs A — theta ${fmt(bandDiff(4, 8))} · alpha ${fmt(bandDiff(8, 13))} · beta ${fmt(bandDiff(13, 30))}  (3 dB ≈ 2× power; A used ${A.n / 2} s, B ${B.n / 2} s)\nAlpha peak — A: ${pk(pa)} · B: ${pk(pb)}   [channels: ${CH_MODE_LABEL[pipe.channelMode]}]`
 }
 
 const csvQuote = (s) => (/[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s)
@@ -474,17 +529,19 @@ function downloadZip() {
   const f3 = (v) => v.toFixed(3)
   const files = [
     { name: `${tag}/eeg.csv`, text: 'time_s,TP9,AF7,AF8,TP10,condition\n' + rec.rows.map((r) => `${(r[0] / 1000).toFixed(4)},${r[1].toFixed(2)},${r[2].toFixed(2)},${r[3].toFixed(2)},${r[4].toFixed(2)},${csvQuote(r[5])}`).join('\n') + '\n' },
-    { name: `${tag}/bands.csv`, text: 'time_s,delta,theta,alpha,beta,gamma,condition\n' + rec.bandRows.map((r) => `${(r.t / 1000).toFixed(3)},${r.vals.map((v) => v.toFixed(4)).join(',')},${csvQuote(r.cond)}`).join('\n') + '\n' },
+    { name: `${tag}/bands.csv`, text: 'time_s,rel_delta,rel_theta,rel_alpha,rel_beta,rel_gamma,abs_delta_dB,abs_theta_dB,abs_alpha_dB,abs_beta_dB,abs_gamma_dB,rel_ready,channels,condition\n' + rec.bandRows.map((r) => `${(r.t / 1000).toFixed(3)},${r.vals.map((v) => v.toFixed(4)).join(',')},${r.abs.map((v) => v.toFixed(2)).join(',')},${r.ready ? 1 : 0},${r.ch},${csvQuote(r.cond)}`).join('\n') + '\n' },
     { name: `${tag}/signal_quality.csv`, text: 'time_s,hsi_TP9,hsi_AF7,hsi_AF8,hsi_TP10,p2p_TP9,p2p_AF7,p2p_AF8,p2p_TP10\n' + rec.quality.map((r) => `${(r[0] / 1000).toFixed(3)},${r.slice(1, 5).join(',')},${r.slice(5).map((v) => v.toFixed(1)).join(',')}`).join('\n') + '\n' },
     { name: `${tag}/accelerometer.csv`, text: 'time_s,x,y,z,condition\n' + rec.accRows.map((r) => `${(r[0] / 1000).toFixed(3)},${r[1].toFixed(4)},${r[2].toFixed(4)},${r[3].toFixed(4)},${csvQuote(r[4])}`).join('\n') + '\n' },
     { name: `${tag}/ppg_infrared.csv`, text: 'time_s,ppg_ir,condition\n' + rec.ppgRows.map((r) => `${(r[0] / 1000).toFixed(3)},${r[1]},${csvQuote(r[2])}`).join('\n') + '\n' },
     { name: `${tag}/blocks.csv`, text: 'condition,start_s,end_s\n' + rec.blocks.map((b) => `${csvQuote(b.label)},${((b.t0 - rec.t0) / 1000).toFixed(3)},${b.t1 == null ? '' : ((b.t1 - rec.t0) / 1000).toFixed(3)}`).join('\n') + '\n' },
-    { name: `${tag}/README.txt`, text: 'Brain Dynamics Lab (PSYC 20N)\neeg.csv: raw EEG, microvolts, 256 Hz. bands.csv: nouscope-style relative band shares (1/f-corrected, sum to 1; delta 0 unless included), ~2 Hz, starts ~15 s after connecting.\nsignal_quality.csv: muse-lsl HSI per channel (0 good, 1 ok, 2 poor) + peak-to-peak µV, 2 Hz. accelerometer.csv: g, 52 Hz. ppg_infrared.csv: raw counts, 64 Hz. blocks.csv: start/stop of each condition.\nTimes are seconds since the first EEG sample.\n' },
+    { name: `${tag}/README.txt`, text: 'Brain Dynamics Lab (PSYC 20N)\neeg.csv: raw EEG, microvolts, 256 Hz. bands.csv (~2 Hz): rel_* = nouscope-style relative band shares (1/f-corrected, sum to 1; delta 0 unless included; valid when rel_ready=1, ~15 s after connecting); abs_*_dB = absolute band power in dB re 1 µV² (delta 1-3 Hz, theta 4-7, alpha 8-12, beta 13-29, gamma 30-40); channels = which electrodes were used (weighted = best-contact auto, posterior = TP9+TP10, frontal = AF7+AF8, all).\nsignal_quality.csv: muse-lsl HSI per channel (0 good, 1 ok, 2 poor) + peak-to-peak µV, 2 Hz. accelerometer.csv: g, 52 Hz. ppg_infrared.csv: raw counts, 64 Hz. blocks.csv: start/stop of each condition.\nTimes are seconds since the first EEG sample.\n' },
   ]
   const a = document.createElement('a'); a.href = URL.createObjectURL(makeZip(files)); a.download = `${tag}.zip`; a.click()
   setTimeout(() => URL.revokeObjectURL(a.href), 4000)
 }
 $('btn-download').addEventListener('click', downloadZip)
+$('ch-mode').addEventListener('change', (e) => { pipe.channelMode = e.target.value; spec.cols = []; updateChannelWarning() })
+$('pwr-mode').addEventListener('change', (e) => { $('delta-label').hidden = e.target.value === 'absolute' })
 $('chk-delta').addEventListener('change', (e) => {
   pipe.normalizeBands = new Set(e.target.checked ? BANDS : ['theta', 'alpha', 'beta', 'gamma'])
 })

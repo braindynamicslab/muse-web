@@ -1,6 +1,7 @@
 // Signal processing ported from nouscope (MIT, Soundtrip LLC / Bob Dougherty):
 //   https://github.com/soundtrip-health/nouscope  (src/js/managers/EEGManager.js, docs/algorithms.md §3, §4, §6)
-// Kept numerically identical to nouscope except where marked "DEVIATION".
+// Kept numerically identical to nouscope except where marked "DEVIATION" (also: the spectrogram / absolute-power
+// spectrum removes each window's mean first, so DC offset and slow drift don't leak into delta).
 //
 // EEG: raw µV (no filtering — same as nouscope) → per-channel RMS quality → 256-sample windows every 128
 //      samples → delta by Hann-DFT (bins 1–3), theta/alpha/beta/gamma by Morlet wavelet power → quality-weighted
@@ -32,6 +33,13 @@ export class BandPipeline {
   weights = [0, 0, 0, 0]
   onBands = null     // (bandPower, ready) each analysis window (~2 Hz)
   onColumn = null    // (Float32Array log10 power, bins 1..SPEC_BINS)
+  // Which electrodes feed band power, spectrogram and comparisons:
+  //   'weighted'  — quality-weighted average, poor channels dropped (nouscope/HSI behaviour; default)
+  //   'posterior' — TP9 + TP10 (behind the ears; closest to the posterior alpha rhythm), quality ignored
+  //   'frontal'   — AF7 + AF8, quality ignored
+  //   'all'       — all four, equal weights, quality ignored
+  channelMode = 'weighted'
+  bandAbs = { delta: -99, theta: -99, alpha: -99, beta: -99, gamma: -99 }   // absolute band power, dB re 1 µV²
   useExternalQuality = false   // true: `quality` is set from outside (muse-lsl HSI) instead of nouscope's RMS rule
 
   constructor() {
@@ -43,7 +51,8 @@ export class BandPipeline {
     this._n = 0
     this._sq = 0; this._an = 0
     this._ap = { a: 0, b: -1.5 }; this._apWin = 0; this._apRefits = 0
-    for (const b of BANDS) this.bandPower[b] = 0
+    for (const b of BANDS) { this.bandPower[b] = 0; this.bandAbs[b] = -99 }
+    this._absInit = false
     this.quality = ['poor', 'poor', 'poor', 'poor']
   }
   reset() { this._reset() }
@@ -81,6 +90,9 @@ export class BandPipeline {
     }
   }
   _weights() {
+    if (this.channelMode === 'posterior') return [0.5, 0, 0, 0.5]
+    if (this.channelMode === 'frontal') return [0, 0.5, 0.5, 0]
+    if (this.channelMode === 'all') return [0.25, 0.25, 0.25, 0.25]
     const SCORE = { good: 2, marginal: 1, poor: 0 }
     const W = { good: 1, marginal: MARGINAL_WEIGHT, poor: 0 }
     const cand = [0, 1, 2, 3].filter((c) => SCORE[this.quality[c]] <= 0).sort((a, b) => SCORE[this.quality[a]] - SCORE[this.quality[b]])
@@ -104,20 +116,31 @@ export class BandPipeline {
     for (const b of BANDS) this.bandPower[b] += BAND_SMOOTH * (res[b] - this.bandPower[b])
     // spectrogram column (same weights)
     if (tw > 0) {
-      const col = new Float32Array(SPEC_BINS)
+      const col = new Float32Array(SPEC_BINS), lin = new Float64Array(SPEC_BINS)
+      const means = wins.map((x) => { let t = 0; for (const v of x) t += v; return t / EEG_BUF })   // DEVIATION: remove DC so it can't leak into the 1–3 Hz bins
       for (let k = 1; k <= SPEC_BINS; k++) {
         const { re, im } = this._dft[k]; let p = 0
         for (let c = 0; c < 4; c++) {
           if (w[c] === 0) continue
-          let r = 0, m = 0; const s = wins[c]
-          for (let n = 0; n < EEG_BUF; n++) { r += re[n] * s[n]; m += im[n] * s[n] }
+          let r = 0, m = 0; const s = wins[c], mu = means[c]
+          for (let n = 0; n < EEG_BUF; n++) { const v = s[n] - mu; r += re[n] * v; m += im[n] * v }
           p += (r * r + m * m) * w[c]
         }
-        col[k - 1] = Math.log10(p / tw + 1e-10)
+        lin[k - 1] = p / tw
+        col[k - 1] = Math.log10(lin[k - 1] + 1e-10)
       }
+      // Absolute band power (µV², shown in dB): sum of 1 Hz PSD bins. PSD = |X|²·2/(fs·Σw²) for a Hann window.
+      const SC = 2 / (EEG_FS * this._hannSS)
+      const sum = (a, b) => { let t = 0; for (let k = a; k <= b; k++) t += lin[k - 1]; return t * SC }
+      const edges = { delta: [1, 3], theta: [4, 7], alpha: [8, 12], beta: [13, 29], gamma: [30, SPEC_BINS] }
+      for (const b of BANDS) {
+        const db = 10 * Math.log10(Math.max(sum(...edges[b]), 1e-9))
+        this.bandAbs[b] = this._absInit ? this.bandAbs[b] + BAND_SMOOTH * (db - this.bandAbs[b]) : db
+      }
+      this._absInit = true
       this.onColumn?.(col)
     }
-    this.onBands?.(this.bandPower, this.ready)
+    this.onBands?.(this.bandPower, this.ready, this.bandAbs)
   }
   _channelBands(sig) {
     let delta = 0
@@ -182,6 +205,7 @@ export class BandPipeline {
     }
     this._dft = {}
     const hann = new Float32Array(N); for (let n = 0; n < N; n++) hann[n] = 0.5 - 0.5 * Math.cos((2 * Math.PI * n) / (N - 1))
+    this._hannSS = hann.reduce((a, v) => a + v * v, 0)
     for (let k = 1; k <= SPEC_BINS; k++) {
       const re = new Float32Array(N), im = new Float32Array(N)
       for (let n = 0; n < N; n++) { const ang = (2 * Math.PI * k * n) / N; re[n] = hann[n] * Math.cos(ang); im[n] = hann[n] * Math.sin(ang) }
