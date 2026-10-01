@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Brain Dynamics Lab · PSYC 20N</title>
+<link rel="stylesheet" href="./src/style.css">
+</head>
+<body>
+<header>
+  <h1>Brain Dynamics Lab <span class="course">PSYC 20N</span></h1>
+  <div id="status">Not connected</div>
+  <div id="battery" hidden></div>
+  <div class="spacer"></div>
+  <button id="btn-connect" class="primary">Connect Muse</button>
+  <button id="btn-sim">Practice (no headset)</button>
+  <button id="btn-disconnect" hidden>Disconnect</button>
+</header>
+
+<div id="browser-warning" hidden>
+  This app needs <b>Google Chrome</b> (or Edge) to talk to the Muse. Safari and Firefox won't work.
+  You can still try <b>Practice</b> mode.
+</div>
+
+<main>
+  <section id="panel-eeg" class="panel">
+    <div class="panel-head">
+      <h2>EEG</h2>
+      <div id="quality"></div>
+      <div class="spacer"></div>
+      <label>Scale
+        <select id="scale">
+          <option value="50">±50 µV</option>
+          <option value="100" selected>±100 µV</option>
+          <option value="200">±200 µV</option>
+          <option value="500">±500 µV</option>
+        </select>
+      </label>
+    </div>
+    <canvas id="cv-eeg"></canvas>
+    <div id="fit-hint"></div>
+  </section>
+
+  <section id="panel-bands" class="panel layer" data-layer="bands" hidden>
+    <div class="panel-head">
+      <h2>Band power</h2>
+      <span class="sub">share of brain-rhythm power, last 60 s</span>
+      <div class="spacer"></div>
+      <label class="sub"><input type="checkbox" id="chk-delta"> include delta (movement-prone)</label>
+    </div>
+    <div id="band-chips"></div>
+    <canvas id="cv-bands"></canvas>
+    <div id="band-note" class="sub"></div>
+  </section>
+
+  <div id="extras">
+  <section id="panel-spec" class="panel layer" data-layer="spectrogram" hidden>
+    <div class="panel-head"><h2>Spectrogram</h2><span class="sub">1–40 Hz, last 60 s · brighter = more power · alpha ≈ 8–13 Hz</span><div class="spacer"></div><label class="sub"><input type="checkbox" id="chk-flat" checked> flatten 1/f slope</label></div>
+    <canvas id="cv-spec"></canvas>
+  </section>
+  <section id="panel-ppg" class="panel layer" data-layer="ppg" hidden>
+    <div class="panel-head"><h2>Pulse (PPG)</h2><div class="spacer"></div><div id="bpm">– bpm</div></div>
+    <canvas id="cv-ppg"></canvas>
+  </section>
+  <section id="panel-motion" class="panel layer" data-layer="motion" hidden>
+    <div class="panel-head"><h2>Head motion (accelerometer)</h2><span class="sub">x / y / z, last 6 s · movement makes EEG artifacts</span><div class="spacer"></div><div id="motion-state">–</div></div>
+    <canvas id="cv-motion"></canvas>
+  </section>
+  </div>
+
+  <section id="panel-rec" class="panel">
+    <div class="panel-head"><h2>Experiment</h2><span class="sub">1. Pick a condition &nbsp; 2. Press Start when you begin &nbsp; 3. Press Stop when you finish</span></div>
+    <div id="markers"></div>
+    <div class="rec-row">
+      <input id="custom-label" placeholder="…or type your own condition" maxlength="40">
+      <button id="btn-custom">Add</button>
+      <div class="spacer"></div>
+      <div id="current">Pick a condition</div>
+      <button id="btn-start" class="go" disabled>▶ Start</button>
+      <button id="btn-stop" class="stop" disabled>■ Stop</button>
+    </div>
+    <div class="rec-row">
+      <span id="rec-time">Recording 00:00</span>
+      <div class="spacer"></div>
+      <button id="btn-download" class="primary" disabled>Download data (.zip)</button>
+    </div>
+    <div id="summary" hidden></div>
+    <div id="compare" hidden>
+      <div class="panel-head"><h2>Compare two conditions</h2>
+        <label class="sub">A (reference) <select id="cmp-a"></select></label>
+        <label class="sub">B <select id="cmp-b"></select></label>
+        <span class="sub">Average spectrum of each, and B − A</span></div>
+      <canvas id="cv-cmp"></canvas>
+      <div id="cmp-note" class="sub"></div>
+    </div>
+    <div class="rec-row" id="layer-row"><span class="sub">Show:</span><span id="layer-toggles"></span></div>
+  </section>
+</main>
+
+<footer>
+  <span>Built on <a href="https://github.com/soundtrip-health/nouscope">nouscope</a> &amp; <a href="https://github.com/soundtrip-health/muse-js">muse-js</a> · MIT</span>
+</footer>
+<script type="module" src="./src/main.js"></script>
+</body>
+</html>

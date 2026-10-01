@@ -1,0 +1,25 @@
+{
+  "name": "muse-web",
+  "version": "0.1.0",
+  "description": "Web-based Muse EEG demo for teaching (Web Bluetooth).",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "muse-js": "github:soundtrip-health/muse-js#muse3",
+    "rxjs": "^7.8.1"
+  },
+  "devDependencies": {
+    "vite": "^7.3.1"
+  },
+  "author": "Manish Saggar (Brain Dynamics Lab)",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/braindynamicslab/muse-web.git"
+  },
+  "homepage": "https://braindynamicslab.github.io/muse-web/"
+}
