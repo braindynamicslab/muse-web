@@ -18,8 +18,18 @@
 </header>
 
 <div id="browser-warning" hidden>
-  This app needs <b>Google Chrome</b> (or Edge) to talk to the Muse. Safari and Firefox won't work.
-  You can still try <b>Practice</b> mode.
+  Connecting to a Muse needs <b>Google Chrome</b> (or Edge) — Safari and Firefox can't do Bluetooth.
+  Practice mode and importing saved data work in any browser.
+</div>
+
+<div id="cue" hidden>
+  <div id="cue-main"><span id="cue-label"></span><span id="cue-time"></span></div>
+  <div id="cue-sub"></div>
+  <div id="cue-bar"><i></i></div>
+</div>
+
+<div id="banner" hidden>
+  <details open><summary id="banner-title"></summary><div id="banner-body"></div></details>
 </div>
 
 <main>
@@ -39,6 +49,7 @@
     </div>
     <canvas id="cv-eeg"></canvas>
     <div id="fit-hint"></div>
+    <div id="emg-row" class="sub" hidden></div>
   </section>
 
   <section id="panel-bands" class="panel layer" data-layer="bands" hidden>
@@ -55,6 +66,10 @@
           <option value="posterior">Back of head: TP9 + TP10</option>
           <option value="frontal">Forehead: AF7 + AF8</option>
           <option value="all">All four</option>
+          <option value="tp9">TP9 only</option>
+          <option value="tp10">TP10 only</option>
+          <option value="af7">AF7 only</option>
+          <option value="af8">AF8 only</option>
         </select></label>
       <div class="spacer"></div>
       <label class="sub" id="delta-label"><input type="checkbox" id="chk-delta"> include delta</label>
@@ -67,7 +82,9 @@
 
   <div id="extras">
   <section id="panel-spec" class="panel layer" data-layer="spectrogram" hidden>
-    <div class="panel-head"><h2>Spectrogram</h2><span class="sub">1–40 Hz, last 60 s · brighter = more power · alpha ≈ 8–13 Hz</span><div class="spacer"></div><label class="sub"><input type="checkbox" id="chk-flat" checked> flatten 1/f slope</label></div>
+    <div class="panel-head"><h2>Spectrogram</h2><span class="sub">last 60 s · brighter = more power · alpha ≈ 8–13 Hz</span><div class="spacer"></div>
+      <label class="sub">Range <select id="spec-range"><option value="40">1–40 Hz</option><option value="80">1–80 Hz (muscle)</option></select></label>
+      <label class="sub"><input type="checkbox" id="chk-flat" checked> flatten 1/f slope</label></div>
     <canvas id="cv-spec"></canvas>
   </section>
   <section id="panel-ppg" class="panel layer" data-layer="ppg" hidden>
@@ -81,7 +98,19 @@
   </div>
 
   <section id="panel-rec" class="panel">
-    <div class="panel-head"><h2>Experiment</h2><span class="sub">1. Pick a condition &nbsp; 2. Press Start when you begin &nbsp; 3. Press Stop when you finish</span></div>
+    <div class="panel-head"><h2>Experiment</h2><span class="sub" id="rec-help">1. Pick a condition &nbsp; 2. Press Start when you begin &nbsp; 3. Press Stop when you finish</span></div>
+
+    <div id="claim-box" hidden>
+      <div class="panel-head"><label>Your claim <select id="claim-select"></select></label></div>
+      <div id="claim-tips" class="sub"></div>
+      <div class="rec-row" id="pred-row">
+        <span class="sub">Prediction (before you record):</span>
+        <select id="pred-band"><option value="">which feature?</option></select>
+        <select id="pred-dir"><option value="">…</option><option value="up">goes UP</option><option value="down">goes DOWN</option><option value="same">does not change</option></select>
+        <span class="sub" id="pred-pair">in condition B vs A</span>
+      </div>
+    </div>
+
     <div id="markers"></div>
     <div class="rec-row">
       <input id="custom-label" placeholder="…or type your own condition" maxlength="40">
@@ -91,21 +120,62 @@
       <button id="btn-start" class="go" disabled>▶ Start</button>
       <button id="btn-stop" class="stop" disabled>■ Stop</button>
     </div>
+
+    <div id="guided">
+      <div class="panel-head"><h2>Guided run</h2><span class="sub">runs the blocks for you — teammates watch the big cue at the top of the page</span></div>
+      <div class="rec-row">
+        <select id="seq-select">
+          <option value="alpha">Find your alpha: eyes open → closed → open</option>
+          <option value="abab">A–B–A–B with two of my conditions</option>
+        </select>
+        <label class="sub" id="seq-ab">A <select id="seq-a"></select> B <select id="seq-b"></select> ×<select id="seq-reps"><option>1</option><option selected>2</option><option>3</option></select></label>
+        <label class="sub">block <input id="seq-len" type="number" min="10" max="180" step="5" value="45" style="width:56px"> s</label>
+        <label class="sub"><input type="checkbox" id="seq-beep"> beep</label>
+      </div>
+      <div class="rec-row">
+        <button id="btn-seq" class="go" disabled>▶ Start guided run</button>
+        <button id="btn-seq-stop" class="stop" disabled>■ Stop run</button>
+        <span id="seq-warn" class="sub"></span>
+      </div>
+    </div>
+
     <div class="rec-row">
       <span id="rec-time">Recording 00:00</span>
       <div class="spacer"></div>
       <button id="btn-download" class="primary" disabled>Download data (.zip)</button>
     </div>
+    <div class="rec-row" id="layer-row"><span class="sub">Show:</span><span id="layer-toggles"></span></div>
+  </section>
+
+  <section id="panel-results" class="panel" hidden>
+    <div class="results-grid">
+      <div class="results-col">
     <div id="summary" hidden></div>
     <div id="compare" hidden>
       <div class="panel-head"><h2>Compare two conditions</h2>
         <label class="sub">A (reference) <select id="cmp-a"></select></label>
         <label class="sub">B <select id="cmp-b"></select></label>
-        <span class="sub">Average spectrum of each, and B − A</span></div>
+        <div class="spacer"></div><button id="btn-card">Save result card (.png)</button></div>
       <canvas id="cv-cmp"></canvas>
       <div id="cmp-note" class="sub"></div>
     </div>
-    <div class="rec-row" id="layer-row"><span class="sub">Show:</span><span id="layer-toggles"></span></div>
+      </div>
+      <div class="results-col">
+    <div id="lab" hidden>
+      <div class="panel-head"><h2>Spectrum lab</h2>
+        <label class="sub">Block <select id="lab-cond"></select></label>
+        <label class="sub">View <select id="lab-mode">
+          <option value="channels">Compare channels (TP9, TP10, AF7, AF8)</option>
+          <option value="reference">Compare references (one electrode)</option></select></label>
+        <label class="sub" id="lab-e-wrap">Electrode <select id="lab-e"><option value="0">TP9</option><option value="3">TP10</option><option value="1">AF7</option><option value="2">AF8</option></select></label>
+        <label class="sub">to <select id="lab-max"><option value="40">40 Hz</option><option value="80">80 Hz</option></select></label>
+      </div>
+      <canvas id="cv-lab"></canvas>
+      <div id="lab-table"></div>
+      <div id="lab-note" class="sub"></div>
+    </div>
+      </div>
+    </div>
   </section>
 </main>
 

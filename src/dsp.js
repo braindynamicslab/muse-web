@@ -20,7 +20,7 @@ const AP_FIT_BANDS = ['theta', 'alpha', 'beta', 'gamma']
 const AP_UPDATE_INTERVAL = 10, AP_SMOOTH = 0.3, AP_MIN_REFITS = 3
 const BAND_SMOOTH = 0.35
 const BAND_FREQ = { delta: 2, theta: 6, alpha: 10, beta: 20, gamma: 40 }
-export const SPEC_BINS = 40           // DEVIATION: nouscope uses 50; 40 Hz is plenty for class
+export const SPEC_BINS = 80           // DEVIATION: nouscope uses 50. 80 Hz so jaw/muscle (EMG) activity above 40 Hz is visible; 1 Hz bins
 const SQ_WIN = 256, SQ_LOW = 50, SQ_HIGH = 100
 const MARGINAL_WEIGHT = 0.5
 
@@ -38,6 +38,7 @@ export class BandPipeline {
   //   'posterior' — TP9 + TP10 (behind the ears; closest to the posterior alpha rhythm), quality ignored
   //   'frontal'   — AF7 + AF8, quality ignored
   //   'all'       — all four, equal weights, quality ignored
+  //   'tp9' | 'tp10' | 'af7' | 'af8' — a single electrode, quality ignored
   channelMode = 'weighted'
   bandAbs = { delta: -99, theta: -99, alpha: -99, beta: -99, gamma: -99 }   // absolute band power, dB re 1 µV²
   useExternalQuality = false   // true: `quality` is set from outside (muse-lsl HSI) instead of nouscope's RMS rule
@@ -90,6 +91,8 @@ export class BandPipeline {
     }
   }
   _weights() {
+    const single = { tp9: 0, af7: 1, af8: 2, tp10: 3 }[this.channelMode]
+    if (single !== undefined) { const w = [0, 0, 0, 0]; w[single] = 1; return w }
     if (this.channelMode === 'posterior') return [0.5, 0, 0, 0.5]
     if (this.channelMode === 'frontal') return [0, 0.5, 0.5, 0]
     if (this.channelMode === 'all') return [0.25, 0.25, 0.25, 0.25]
@@ -132,7 +135,7 @@ export class BandPipeline {
       // Absolute band power (µV², shown in dB): sum of 1 Hz PSD bins. PSD = |X|²·2/(fs·Σw²) for a Hann window.
       const SC = 2 / (EEG_FS * this._hannSS)
       const sum = (a, b) => { let t = 0; for (let k = a; k <= b; k++) t += lin[k - 1]; return t * SC }
-      const edges = { delta: [1, 3], theta: [4, 7], alpha: [8, 12], beta: [13, 29], gamma: [30, SPEC_BINS] }
+      const edges = { delta: [1, 3], theta: [4, 7], alpha: [8, 12], beta: [13, 29], gamma: [30, 40] }
       for (const b of BANDS) {
         const db = 10 * Math.log10(Math.max(sum(...edges[b]), 1e-9))
         this.bandAbs[b] = this._absInit ? this.bandAbs[b] + BAND_SMOOTH * (db - this.bandAbs[b]) : db

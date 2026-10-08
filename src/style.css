@@ -84,3 +84,33 @@ main{grid-template-rows:clamp(400px,52vh,560px) auto;align-content:start}
 #extras{align-self:start}
 #extras #panel-spec{flex:0 0 auto}
 #extras #cv-spec{flex:0 0 auto;height:min(300px,32vh);min-height:180px}
+
+/* big cue for teammates (guided runs) */
+#cue{position:sticky;top:0;z-index:20;padding:10px 16px 8px;background:#14213a;border-bottom:2px solid var(--accent)}
+#cue.running{background:#10351f;border-bottom-color:var(--good)}#cue.closed{background:#2b1b3d;border-bottom-color:#c78bff}
+#cue.ready{background:#3a2d10;border-bottom-color:var(--mid)}#cue.done{background:#1c2430}
+#cue-main{display:flex;align-items:baseline;gap:18px;font-size:34px;font-weight:700}
+#cue-time{font-variant-numeric:tabular-nums;color:var(--dim);font-size:30px;margin-left:auto}
+#cue-sub{color:var(--fg);opacity:.85;font-size:15px;margin-top:2px}
+#cue-bar{height:6px;background:#00000055;border-radius:3px;margin-top:8px;overflow:hidden}#cue-bar i{display:block;height:100%;width:0;background:currentColor;transition:width .25s linear}
+#banner{padding:8px 16px;background:#13202f;border-bottom:1px solid var(--line);font-size:13px}
+#banner summary{cursor:pointer;font-weight:600}#banner p{margin:6px 0}
+#claim-box{border:1px solid var(--line);border-radius:8px;padding:8px 10px;margin-bottom:10px}
+#claim-tips{margin:4px 0 6px}
+#guided,#lab{margin-top:12px;border-top:1px solid var(--line);padding-top:8px}
+#seq-warn{color:var(--mid)}
+#lab-table table{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:tabular-nums}
+#lab-table th,#lab-table td{padding:4px 8px;border-bottom:1px solid var(--line);text-align:right}
+#lab-table th:first-child,#lab-table td:first-child{text-align:left}
+#cv-lab{height:240px}
+#pred-row select{max-width:240px}
+#emg-row{margin-top:4px}
+.ok-mark{color:var(--good)}.bad-mark{color:var(--bad)}
+
+/* results row: full width under the 2x2 */
+#panel-results{grid-column:1 / -1;grid-row:3}
+.results-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px;align-items:start}
+.results-col{min-width:0}
+#compare,#lab{margin-top:0;border-top:0;padding-top:0}
+#summary{margin:0 0 12px}
+@media (max-width:1000px){.results-grid{grid-template-columns:minmax(0,1fr)}#panel-results{grid-row:auto;order:5}}
