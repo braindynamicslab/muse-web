@@ -24,7 +24,7 @@ function tables() {
 }
 
 /** Welch-style average PSD (µV²/Hz at FREQS) over the windows of the given segments. segs: array of Float64Array. */
-export function psd(segs) {
+export function psd(segs, nf = NF) {
   const { cos, sin } = tables()
   const pw = new Float64Array(NF); let n = 0
   const x = new Float64Array(WIN)
@@ -32,7 +32,7 @@ export function psd(segs) {
     for (let st = 0; st + WIN <= s.length; st += HOP) {
       let m = 0; for (let i = 0; i < WIN; i++) m += s[st + i]; m /= WIN
       for (let i = 0; i < WIN; i++) x[i] = s[st + i] - m
-      for (let k = 0; k < NF; k++) {
+      for (let k = 0; k < nf; k++) {
         let re = 0, im = 0; const o = k * WIN
         for (let i = 0; i < WIN; i++) { re += x[i] * cos[o + i]; im += x[i] * sin[o + i] }
         pw[k] += (re * re + im * im) * SC
@@ -47,10 +47,10 @@ export function psd(segs) {
 export const ELECTRODES = ['TP9', 'AF7', 'AF8', 'TP10']          // row order in eeg.csv / rec.rows
 const PARTNER = [3, 2, 1, 0]                                     // contralateral electrode in the same row
 export const REFERENCES = [
-  { id: 'device', label: 'Device reference (as recorded)' },
-  { id: 'average', label: 'Average of all four' },
-  { id: 'linked', label: 'Linked ears (mean of TP9, TP10)' },
-  { id: 'bipolar', label: 'Bipolar (minus the other side)' },
+  { id: 'device', label: 'Device (as recorded)' },
+  { id: 'average', label: 'Average of 4' },
+  { id: 'linked', label: 'Linked ears' },
+  { id: 'bipolar', label: 'Bipolar (− other side)' },
 ]
 
 /** X = [tp9, af7, af8, tp10] Float64Arrays. Returns the signal for electrode e under a reference. */
@@ -95,11 +95,28 @@ export function peakAbove(f, db, lo = 7.5, hi = 13.5, margin = 1) {
   return { iaf, height, strength }
 }
 
-/** Alpha metrics from a high-resolution PSD (µV²/Hz): alpha band power (8–13 Hz, dB re 1 µV²) + peak above 1/f. */
+/** Background (aperiodic) fit used for "above background": line through log f vs dB on 2–6 and 15–35 Hz. */
+function backgroundFit(f, db) {
+  const xs = [], ys = []
+  for (let k = 0; k < f.length; k++) if ((f[k] >= 2 && f[k] <= 6) || (f[k] >= 15 && f[k] <= 35)) { xs.push(Math.log10(f[k])); ys.push(db[k]) }
+  const n = xs.length; let sx = 0, sy = 0, sxx = 0, sxy = 0
+  for (let i = 0; i < n; i++) { sx += xs[i]; sy += ys[i]; sxx += xs[i] * xs[i]; sxy += xs[i] * ys[i] }
+  const b = (n * sxy - sx * sy) / (n * sxx - sx * sx)
+  return { a: (sy - b * sx) / n, b }
+}
+
+/** Alpha metrics from a high-resolution PSD (µV²/Hz):
+ *  bandDb  — raw 8–13 Hz band power (dB re 1 µV²); includes whatever the 1/f background contributes there
+ *  aboveDb — the same band power relative to the fitted 1/f background in that band (0 dB = no alpha bump)
+ *  iaf / height / strength — alpha peak above background (see peakAbove) */
 export function alphaMetrics(pw) {
-  let band = 0
-  for (let k = 0; k < NF; k++) if (FREQS[k] >= 8 && FREQS[k] < 13) band += pw[k] * DF
-  return { bandDb: dB(band), ...peakAbove(FREQS, Array.from(pw, dB)) }
+  const db = Array.from(pw, dB)
+  let band = 0, bg = 0
+  const fit = backgroundFit(FREQS, db)
+  for (let k = 0; k < NF; k++) {
+    if (FREQS[k] >= 8 && FREQS[k] < 13) { band += pw[k] * DF; bg += Math.pow(10, (fit.a + fit.b * Math.log10(FREQS[k])) / 10) * DF }
+  }
+  return { bandDb: dB(band), aboveDb: dB(band) - dB(bg), ...peakAbove(FREQS, db) }
 }
 
 export const peakLabel = (m) => (m.strength === 'none' ? 'no clear peak' : `${m.iaf.toFixed(1)} Hz${m.strength === 'weak' ? ' (weak)' : ''}`)

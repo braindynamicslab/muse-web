@@ -22,8 +22,10 @@
   Practice mode and importing saved data work in any browser.
 </div>
 
+<div id="fix-overlay" hidden>+</div>
+
 <div id="cue" hidden>
-  <div id="cue-main"><span id="cue-label"></span><span id="cue-time"></span></div>
+  <div id="cue-main"><span id="cue-label"></span><span id="cue-plus">+</span><span id="cue-time"></span></div>
   <div id="cue-sub"></div>
   <div id="cue-bar"><i></i></div>
 </div>
@@ -75,6 +77,7 @@
       <label class="sub" id="delta-label"><input type="checkbox" id="chk-delta"> include delta</label>
     </div>
     <div id="ch-warn"></div>
+    <div id="lock-note" class="sub" hidden><span id="lock-text"></span> <button id="btn-relock" class="linklike">unlock (re-choose at the next block)</button></div>
     <div id="band-chips"></div>
     <canvas id="cv-bands"></canvas>
     <div id="band-note" class="sub"></div>
@@ -112,6 +115,7 @@
     </div>
 
     <div id="markers"></div>
+    <div class="rec-row"><label class="sub"><input type="checkbox" id="chk-fix"> show a big fixation cross (+) in the middle of the screen during blocks</label></div>
     <div class="rec-row">
       <input id="custom-label" placeholder="…or type your own condition" maxlength="40">
       <button id="btn-custom">Add</button>
@@ -163,11 +167,12 @@
       <div class="results-col">
     <div id="lab" hidden>
       <div class="panel-head"><h2>Spectrum lab</h2>
-        <label class="sub">Block <select id="lab-cond"></select></label>
         <label class="sub">View <select id="lab-mode">
+          <option value="blocks">Compare blocks (one electrode, or both ears)</option>
           <option value="channels">Compare channels (TP9, TP10, AF7, AF8)</option>
           <option value="reference">Compare references (one electrode)</option></select></label>
-        <label class="sub" id="lab-e-wrap">Electrode <select id="lab-e"><option value="0">TP9</option><option value="3">TP10</option><option value="1">AF7</option><option value="2">AF8</option></select></label>
+        <label class="sub" id="lab-cond-wrap">Block <select id="lab-cond"></select></label>
+        <label class="sub" id="lab-e-wrap">Electrode <select id="lab-e"></select></label>
         <label class="sub">to <select id="lab-max"><option value="40">40 Hz</option><option value="80">80 Hz</option></select></label>
       </div>
       <canvas id="cv-lab"></canvas>

@@ -41,6 +41,7 @@ export class BandPipeline {
   //   'tp9' | 'tp10' | 'af7' | 'af8' — a single electrode, quality ignored
   channelMode = 'weighted'
   bandAbs = { delta: -99, theta: -99, alpha: -99, beta: -99, gamma: -99 }   // absolute band power, dB re 1 µV²
+  lockedWeights = null                       // see lockWeights()
   useExternalQuality = false   // true: `quality` is set from outside (muse-lsl HSI) instead of nouscope's RMS rule
 
   constructor() {
@@ -54,6 +55,7 @@ export class BandPipeline {
     this._ap = { a: 0, b: -1.5 }; this._apWin = 0; this._apRefits = 0
     for (const b of BANDS) { this.bandPower[b] = 0; this.bandAbs[b] = -99 }
     this._absInit = false
+    this.lockedWeights = null
     this.quality = ['poor', 'poor', 'poor', 'poor']
   }
   reset() { this._reset() }
@@ -96,6 +98,14 @@ export class BandPipeline {
     if (this.channelMode === 'posterior') return [0.5, 0, 0, 0.5]
     if (this.channelMode === 'frontal') return [0, 0.5, 0.5, 0]
     if (this.channelMode === 'all') return [0.25, 0.25, 0.25, 0.25]
+    if (this.lockedWeights) return this.lockedWeights.slice()     // 'weighted' mode, frozen for the whole recording
+    return this._qualityWeights()
+  }
+  /** Freeze the current best-contact weights so every block of a recording is analysed with the same channels
+   *  (otherwise the channel set can change between blocks and fake a difference between conditions). */
+  lockWeights() { if (this.channelMode === 'weighted') this.lockedWeights = this._qualityWeights() }
+  unlockWeights() { this.lockedWeights = null }
+  _qualityWeights() {
     const SCORE = { good: 2, marginal: 1, poor: 0 }
     const W = { good: 1, marginal: MARGINAL_WEIGHT, poor: 0 }
     const cand = [0, 1, 2, 3].filter((c) => SCORE[this.quality[c]] <= 0).sort((a, b) => SCORE[this.quality[a]] - SCORE[this.quality[b]])

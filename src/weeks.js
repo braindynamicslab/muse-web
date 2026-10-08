@@ -11,6 +11,7 @@ export const WEEKS = {
   3: {
     title: 'Week 3 · The brainwave dictionary on trial',
     layers: ['bands', 'spectrogram'],
+    channels: 'posterior',               // alpha is a back-of-head rhythm: TP9 + TP10 by default
     claims: true,
     banner: `<p><b>1. Find your alpha</b> (everyone): use <b>Guided run → Find your alpha</b>. Three blocks, 45 s each:
                eyes open → eyes closed → eyes open. Teammates watch the big cue at the top and tell the wearer when to switch.
@@ -23,19 +24,19 @@ export const WEEKS = {
 
 export const CLAIMS = [
   { id: 'attention', name: 'Attention — “Beta = busy, active mind”',
-    conditions: ['Quiet rest', 'Silent mental arithmetic'], band: 'beta', dir: 'up',
+    conditions: ['Quiet rest', 'Silent mental arithmetic'], band: 'beta', dir: 'up', channels: 'all',
     tips: 'Keep eyes open and fixed on a spot in both conditions. Do the arithmetic <b>silently</b> (e.g. count down from 500 by 7) — talking or clenching adds muscle noise that looks like beta.' },
   { id: 'memory', name: 'Working memory — “Theta = memory”',
-    conditions: ['Hold 1–2 digits', 'Hold 6–7 digits'], band: 'theta', dir: 'up',
+    conditions: ['Hold 1–2 digits', 'Hold 6–7 digits'], band: 'theta', dir: 'up', channels: 'frontal',
     tips: 'Show digits on a timer (slide or PsyToolkit), then keep them in mind silently. Remember: the Muse sits on the forehead, so it cannot measure true frontal-midline theta.' },
   { id: 'meditation', name: 'Meditation — “Alpha = relaxed”',
-    conditions: ['Eyes-closed rest', 'Meditation'], band: 'alpha', dir: 'up',
+    conditions: ['Eyes-closed rest', 'Meditation'], band: 'alpha', dir: 'up', channels: 'posterior',
     tips: 'Both conditions have eyes closed, so eye closure alone cannot explain a difference. Alternate (rest, meditation, rest, meditation) so drowsiness over time does not fool you.' },
   { id: 'wandering', name: 'Mind wandering — focused attention vs. rest',
-    conditions: ['Focused attention (count breaths)', 'Mind wandering'], band: '', dir: '',
+    conditions: ['Focused attention (count breaths)', 'Mind wandering'], band: '', dir: '', channels: 'posterior',
     tips: 'You decide which feature should change — and say why — before you look. There is no behavioural measure, so note after each block whether you lost count.' },
   { id: 'gamma', name: 'Gamma / muscle — “Gamma = concentration”',
-    conditions: ['Quiet rest', 'Mental arithmetic', 'Jaw clench'], band: 'hf', dir: 'up', range: 80,
+    conditions: ['Quiet rest', 'Mental arithmetic', 'Jaw clench'], band: 'hf', dir: 'up', range: 80, channels: 'all',
     tips: 'Compare rest with mental arithmetic, then with a jaw clench. Watch the <b>muscle ratio</b> under the EEG traces and the 40–80 Hz region (the 60 Hz power-line band is greyed out). What does this say about scalp gamma from a Muse?' },
   { id: 'own', name: 'Design your own', conditions: [], band: '', dir: '',
     tips: 'Add your own conditions below. Decide what you expect before you record.' },

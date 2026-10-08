@@ -17,16 +17,18 @@ In **Experiment → Guided run**, choose **Find your alpha** and press **▶ Sta
 
 **Eyes open (1) → Eyes closed → Eyes open (2)**
 
-- Eyes open: look at one fixed spot. Eyes closed: relax — don't squeeze. Same posture and jaw the whole time.
+- Eyes open: look at the **+** in the cue bar at the top (tick *show a big fixation cross* in the Experiment box to put a big + in the middle of the screen too). Eyes closed: relax — don't squeeze. Same posture and jaw the whole time.
 - Teammates: watch the cue at the top. When it changes, say **“open”** or **“close”** out loud, quietly.
 - Don't make this a research recording — it's your own classroom observation.
 
-When it finishes, scroll to **Spectrum lab** (results row). Choose the **Eyes closed** block, view **Compare channels**:
+When it finishes, scroll to **Spectrum lab** (results row). The default view, **Compare blocks**, overlays your three blocks for one electrode (try TP9, then TP10, then both ears):
 
-1. Did alpha power (8–13 Hz) go **up** with eyes closed? (Compare it with the open blocks in the table and the Compare chart.)
+1. Did alpha go **up** with eyes closed? Read the **alpha above 1/f background** and **peak above 1/f** columns — they ask “is there a bump above the smooth background?” The raw 8–13 Hz power column can mislead: eyes-open recordings often carry extra low-frequency power (eye movements, blinks) that lifts it even with no alpha.
 2. Where is your alpha peak? Write it down: **IAF = ______ Hz**
-3. Is **TP9 similar to TP10**? (Same peak frequency? Similar height?)
+3. Is **TP9 similar to TP10**? (Switch the view to **Compare channels**: same peak frequency? Similar height?)
 4. Did alpha come back down in the second eyes-open block?
+
+The Week 3 link starts with **Channels = Back of head (TP9 + TP10)**, because alpha is a back-of-head rhythm; each claim picks sensible channels for its feature (forehead for working memory, all four for attention and gamma). The app keeps the **same channels for the whole recording** (it says which ones above the band-power plot), so blocks are compared like with like.
 
 *“No clear peak”? That is a real result.* Some people have a small or no alpha peak, and a poor ear contact can hide one. Note what you saw and move on.
 
@@ -46,7 +48,7 @@ Answer:
 3. Did **IAF** (the peak position) change?
 4. Which EEG features are robust to how we measure them, and which are not?
 
-*Caution:* with only four electrodes an “average reference” is a rough approximation, and a noisy channel leaks into the others.
+*Cautions:* with only four electrodes an “average reference” is a rough approximation, and a noisy channel leaks into the others. For an ear electrode, **linked ears** and **bipolar** have the same shape — linked is just bipolar ÷ 2, so 6 dB lower. Compare the **eyes-open** block too: shared low-frequency power at both ears is the reference's signal, and re-referencing removes it.
 
 ---
 
@@ -66,7 +68,7 @@ Pick **one claim** (write your first and second choice on the board; two groups 
 1. Choose your claim in the **Experiment** box. Read the tip.
 2. **Write your prediction first:** which feature changes, in which direction. (“beta goes up in arithmetic vs rest.”) *Decide before you look.*
 3. Run **A–B–A–B**: **Guided run → A–B–A–B**, pick your two conditions, 45 s blocks, ×2. Alternating protects you from drift and order effects (e.g. getting sleepy over time).
-4. In **Compare two conditions** (A = reference), read the result. The app tells you whether your prediction matched.
+4. In **Compare two conditions** (A = reference; the summary table above it uses the same reference), read the result. The app tells you whether your prediction matched.
 5. Click **Save result card (.png)** and bring it to the debrief.
 
 **Design rules:** same posture every block · silent tasks (talking = jaw noise) · eyes open and fixed unless eyes-closed is the point · note anything odd (itch, sneeze, lost count) with the time.

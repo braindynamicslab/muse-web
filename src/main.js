@@ -89,7 +89,7 @@ pipe.onBands = (bp, ready, abs) => {
   const vals = BANDS.map((b) => bp[b]), absv = BANDS.map((b) => abs[b])
   rec.bandHist.push({ t: lastTs, vals, abs: absv, ready })
   while (rec.bandHist.length && lastTs - rec.bandHist[0].t > BAND_WIN_MS + 5000) rec.bandHist.shift()
-  rec.bandRows.push({ t: lastTs - rec.t0, cond: rec.current || '', age: blockAge(), settle: rec.curSettle, vals, abs: absv, ready, ch: pipe.channelMode })
+  rec.bandRows.push({ t: lastTs - rec.t0, cond: rec.current || '', age: blockAge(), settle: rec.curSettle, vals, abs: absv, ready, ch: `${pipe.channelMode}:${CH.filter((_, c) => pipe.weights[c] > 0).join('+')}` })
 }
 
 // ---------- connection ----------
@@ -196,14 +196,25 @@ function updateChannelWarning() {
   const poor = CH.filter((_, c) => hsi.levels[c] === 2)
   let msg = ''
   if (pipe.channelMode === 'weighted') {
-    if (poor.length >= 2) msg = `${poor.join(' and ')} have poor contact and are being left out — these results come from the remaining channels only.`
+    if (pipe.lockedWeights) {
+      const used = CH.filter((_, c) => pipe.lockedWeights[c] > 0)
+      const nowBad = used.filter((n) => hsi.levels[CH.indexOf(n)] === 2)
+      $('lock-text').textContent = `Channels locked for this recording: ${used.join(', ')} — every block is analysed with the same channels.` +
+        (nowBad.length ? ` ${nowBad.join(' and ')} ${nowBad.length > 1 ? 'have' : 'has'} poor contact now but ${nowBad.length > 1 ? 'stay' : 'stays'} included.` : '')
+      $('lock-note').hidden = false
+    } else {
+      $('lock-note').hidden = true
+      if (poor.length >= 2) msg = `${poor.join(' and ')} have poor contact and are being left out — these results come from the remaining channels only.`
+    }
   } else {
+    $('lock-note').hidden = true
     const idx = { posterior: [0, 3], frontal: [1, 2], all: [0, 1, 2, 3], tp9: [0], af7: [1], af8: [2], tp10: [3] }[pipe.channelMode]
     const bad = idx.filter((c) => hsi.levels[c] === 2).map((c) => CH[c])
     if (bad.length) msg = `${bad.join(' and ')} ${bad.length > 1 ? 'have' : 'has'} poor contact but ${bad.length > 1 ? 'are' : 'is'} still included — treat these results with caution.`
   }
   $('ch-warn').textContent = msg
 }
+$('btn-relock').addEventListener('click', () => { pipe.unlockWeights(); updateChannelWarning() })
 $('quality').innerHTML = CH.map((n) => `<span class="q"><i></i>${n}</span>`).join('')
 function updateBattery() {
   const el = $('battery')
@@ -409,6 +420,7 @@ function renderConditionButtons() {
 const nowMs = () => (eeg.n ? eeg.t[(eeg.n - 1) % N] : 0)
 function startBlock(settle = SETTLE_S) {
   if (!connected || rec.current || !rec.selected) return
+  if (!pipe.lockedWeights) pipe.lockWeights()     // same channels for every block of this recording
   rec.current = rec.selected; rec.blockT0 = nowMs(); rec.curSettle = settle
   rec.blocks.push({ label: rec.current, t0: rec.blockT0, t1: null, settle })
   updateCurrentUi()
@@ -458,6 +470,7 @@ function applyClaim(id) {
   conditions.splice(0, conditions.length, ...(c.conditions.length ? c.conditions : PRESETS))
   rec.selected = null; renderConditionButtons(); updateCurrentUi()
   const r = String(c.range || 40); $('spec-range').value = r; $('lab-max').value = r; lab.key = ''
+  if (c.channels) setChannelMode(c.channels)
   $('pred-pair').textContent = 'for B compared with A in the Compare panel'
 }
 function readPrediction() { rec.prediction = { band: $('pred-band').value, dir: $('pred-dir').value } }
@@ -499,8 +512,9 @@ function buildSteps() {
   for (let r = 0; r < reps; r++) steps.push({ label: A, sec: len, settle: 3 }, { label: B, sec: len, settle: 3 })
   return steps
 }
-function showCue(cls, label, time, sub, frac) {
-  const el = $('cue'); el.hidden = false; el.className = cls
+function showCue(cls, label, time, sub, frac, opts = {}) {
+  const el = $('cue'); el.hidden = false; el.className = cls; el.dataset.src = opts.src || 'seq'
+  $('cue-plus').style.visibility = opts.plus ? 'visible' : 'hidden'
   $('cue-label').textContent = label; $('cue-time').textContent = time; $('cue-sub').textContent = sub
   $('cue-bar').firstElementChild.style.width = `${Math.round(Math.max(0, Math.min(1, frac)) * 100)}%`
 }
@@ -537,14 +551,14 @@ function seqTick() {
   const t = nowMs()
   if (seq.pre) {
     const left = 5000 - (t - seq.tStep)
-    showCue('ready', 'Get ready…', `${Math.max(0, Math.ceil(left / 1000))} s`, `First: ${seq.steps[0].label}. ${cueText(seq.steps[0].label)}`, 1 - left / 5000)
+    showCue('ready', 'Get ready…', `${Math.max(0, Math.ceil(left / 1000))} s`, `First: ${seq.steps[0].label}. ${cueText(seq.steps[0].label)}`, 1 - left / 5000, { plus: true })
     if (left <= 0) beginStep(0)
     return
   }
   const st = seq.steps[seq.i], left = st.sec * 1000 - (t - seq.tStep)
   const next = seq.steps[seq.i + 1]
   showCue(/closed|medit/i.test(st.label) ? 'closed' : 'running', `● ${st.label.toUpperCase()}`, `${Math.max(0, Math.ceil(left / 1000))} s`,
-    `${cueText(st.label)}   ·   block ${seq.i + 1} of ${seq.steps.length}${next ? `   ·   next: ${next.label}` : '   ·   last block'}`, 1 - left / (st.sec * 1000))
+    `${cueText(st.label)}   ·   block ${seq.i + 1} of ${seq.steps.length}${next ? `   ·   next: ${next.label}` : '   ·   last block'}`, 1 - left / (st.sec * 1000), { plus: !/closed|medit/i.test(st.label) })
   if (left <= 0) {
     endBlock()
     if (next) beginStep(seq.i + 1)
@@ -554,6 +568,25 @@ function seqTick() {
 $('btn-seq').addEventListener('click', startSeq)
 $('btn-seq-stop').addEventListener('click', () => stopSeq('Guided run stopped'))
 setInterval(seqTick, 200)
+
+// cue + fixation cross for manual Start/Stop blocks, and the optional big cross in the middle of the screen
+const NO_FIX = /closed|medit/i
+function updateFixOverlay() {
+  const label = seq.active ? (seq.pre ? seq.steps[0].label : seq.steps[seq.i].label) : rec.current
+  $('fix-overlay').hidden = !($('chk-fix').checked && label && !NO_FIX.test(label))
+}
+function manualCueTick() {
+  updateFixOverlay()
+  if (seq.active) return
+  const el = $('cue')
+  if (rec.current) {
+    const closed = NO_FIX.test(rec.current), s = Math.max(0, Math.floor(blockAge()))
+    showCue(closed ? 'closed' : 'running', `● ${rec.current.toUpperCase()}`, `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`,
+      cueText(rec.current) || 'Block running — press Stop when you finish.', 0, { plus: !closed, src: 'manual' })
+  } else if (!el.hidden && el.dataset.src === 'manual') el.hidden = true
+}
+setInterval(manualCueTick, 200)
+$('chk-fix').addEventListener('change', updateFixOverlay)
 
 const blockCutoff = (r) => r.age < (r.settle ?? SETTLE_S)
 function updateSummary() {
@@ -569,7 +602,8 @@ function updateSummary() {
   if (!groups.size) { el.hidden = true; return }
   const withDelta = abs || pipe.normalizeBands.has('delta')
   const cols = BANDS.map((b, i) => [b, i]).filter(([b]) => b !== 'delta' || withDelta)
-  const rows = [...groups.entries()], base = rows[0][1]
+  const refName = groups.has($('cmp-a').value) ? $('cmp-a').value : [...groups.keys()][0]
+  const rows = [[refName, groups.get(refName)], ...[...groups.entries()].filter(([n]) => n !== refName)], base = groups.get(refName)
   let html = `<table><tr><th>Condition (mean ${abs ? 'band power, dB' : 'band share'})</th><th>time</th>` + cols.map(([b]) => `<th style="color:${BAND_COLORS[b]}">${BAND_LABEL[b].split(' ')[0]}</th>`).join('') + '</tr>'
   rows.forEach(([name, g], ri) => {
     html += `<tr><td>${name}${ri === 0 ? ' <span class="sub">(reference)</span>' : ''}</td><td>${Math.round(g.n / 2)} s</td>` + cols.map(([b, i]) => {
@@ -585,7 +619,7 @@ function updateSummary() {
       return `<td>${pct}% <span class="${d > 0 ? 'up' : d < 0 ? 'down' : ''}">(${d > 0 ? '+' : ''}${d}%)</span></td>`
     }).join('') + '</tr>'
   })
-  el.innerHTML = html + `</table><div class="sub">Change in brackets is relative to the first condition you ran. The first seconds of each block are ignored (2 s; 3–5 s in guided runs).${abs ? '' : ' Relative values start ~15 s after connecting.'}</div>`
+  el.innerHTML = html + `</table><div class="sub">Change in brackets is relative to the reference row — the A you chose in Compare, otherwise the first condition you ran. The first seconds of each block are ignored (2 s; 3–5 s in guided runs).${abs ? '' : ' Relative values start ~15 s after connecting.'}</div>`
   el.hidden = false
 }
 
@@ -640,7 +674,7 @@ function drawCompare() {
   const fmt = (v) => `${v > 0 ? '+' : ''}${v.toFixed(1)} dB`
   const pa = peakAbove(F1, dbA, 8, 13, 0), pb = peakAbove(F1, dbB, 8, 13, 0)
   const pk = (p) => (p.strength === 'none' ? 'no clear peak' : `${p.iaf.toFixed(1)} Hz, ${p.height.toFixed(1)} dB above background${p.strength === 'weak' ? ' (weak)' : ''}`)
-  let txt = `B vs A — theta ${fmt(bandMean(diff, 'theta'))} · alpha ${fmt(bandMean(diff, 'alpha'))} · beta ${fmt(bandMean(diff, 'beta'))}${nb > 60 ? ` · 40–80 Hz ${fmt(bandMean(diff, 'hf'))}` : ''}  (3 dB ≈ 2× power; A used ${A.n / 2} s, B ${B.n / 2} s)\nAlpha peak — A: ${pk(pa)} · B: ${pk(pb)}   [channels: ${CH_MODE_LABEL[pipe.channelMode]}]`
+  let txt = `B vs A — theta ${fmt(bandMean(diff, 'theta'))} · alpha ${fmt(bandMean(diff, 'alpha'))} · beta ${fmt(bandMean(diff, 'beta'))}${nb > 60 ? ` · 40–80 Hz ${fmt(bandMean(diff, 'hf'))}` : ''}  (3 dB ≈ 2× power; A used ${A.n / 2} s, B ${B.n / 2} s)\nAlpha peak (coarse, 1 Hz bins; Spectrum lab has the precise IAF) — A: ${pk(pa)} · B: ${pk(pb)}   [channels: ${CH_MODE_LABEL[pipe.channelMode]}]`
   const pr = rec.prediction
   if (pr && pr.band && pr.dir) {
     const d = bandMean(diff, pr.band), obs = d > 0.5 ? 'up' : d < -0.5 ? 'down' : 'same'
@@ -650,7 +684,7 @@ function drawCompare() {
 }
 
 // ---------- Spectrum lab: compare channels, or compare references, on a finished block ----------
-const lab = { key: '', res: null }
+const lab = { key: '', res: null, eMode: '' }
 const lowerBound = (tRel) => { let lo = 0, hi = rec.rows.length; while (lo < hi) { const m = (lo + hi) >> 1; if (rec.rows[m][0] < tRel) lo = m + 1; else hi = m } return lo }
 const usableBlocks = (cond) => rec.blocks.filter((b) => b.label === cond && b.t1 != null && (b.t1 - b.t0) / 1000 - (b.settle ?? SETTLE_S) >= 4.2)
 function labSegments(cond) {
@@ -662,36 +696,60 @@ function labSegments(cond) {
   }
   return segs
 }
+const LAB_PALETTE = ['#8b95a8', '#4da3ff', '#3ecf8e', '#f5b942', '#ef7b5b', '#c78bff', '#e6e9ef']
 function updateLabOptions() {
   const names = [...new Set(rec.blocks.filter((b) => b.t1 != null).map((b) => b.label))].filter((n) => usableBlocks(n).length)
   $('lab').hidden = !names.length
   if (!names.length) return
+  const mode = $('lab-mode').value
   const sel = $('lab-cond'), cur = sel.value
   if (sel.options.length !== names.length || [...sel.options].some((o, i) => o.value !== names[i])) {
     sel.innerHTML = names.map((n) => `<option>${n}</option>`).join('')
     sel.value = names.includes(cur) ? cur : names[names.length - 1]
   }
-  $('lab-e-wrap').hidden = $('lab-mode').value !== 'reference'
+  $('lab-cond-wrap').hidden = mode !== 'reference' && mode !== 'channels'
+  $('lab-e-wrap').hidden = mode === 'channels'
+  if (lab.eMode !== mode) {       // electrode choices depend on the view ("both ears" only makes sense when comparing blocks)
+    const prev = $('lab-e').value
+    $('lab-e').innerHTML = '<option value="0">TP9</option><option value="3">TP10</option><option value="1">AF7</option><option value="2">AF8</option>' + (mode === 'blocks' ? '<option value="ears">Both ears (TP9 + TP10)</option>' : '')
+    $('lab-e').value = [...$('lab-e').options].some((o) => o.value === prev) ? prev : (mode === 'blocks' ? 'ears' : '0')
+    lab.eMode = mode; lab.key = ''
+  }
 }
 function computeLab() {
-  const cond = $('lab-cond').value, mode = $('lab-mode').value, e = +$('lab-e').value, max = +$('lab-max').value
+  const mode = $('lab-mode').value, cond = $('lab-cond').value, eRaw = $('lab-e').value, max = +$('lab-max').value
   const done = rec.blocks.filter((b) => b.t1 != null).length
-  const key = [cond, mode, e, max, done].join('|')
+  const key = [mode, cond, eRaw, max, done].join('|')
   if (key === lab.key) return
   lab.key = key
-  const segs = labSegments(cond)
-  if (!segs.length) { lab.res = null; return }
   const nf = Math.round(max / DF)
-  const sigs = mode === 'channels'
-    ? [0, 3, 1, 2].map((c) => ({ name: ELECTRODES[c], color: COLORS[c], get: (X) => derive(X, c, 'device') }))
-    : REFERENCES.map((r, i) => ({ name: r.label, color: ['#e6e9ef', '#4da3ff', '#3ecf8e', '#ef7b5b'][i], get: (X) => derive(X, e, r.id) }))
-  lab.res = { mode, max, nf, cond, e, sigs: sigs.map((s) => { const { pw, n } = psd(segs.map(s.get), nf); return { name: s.name, color: s.color, pw, n, m: alphaMetrics(pw) } }) }
+  const mk = (name, color, segs, getters) => {      // average the PSD over getters (e.g. both ears), then alpha metrics
+    let pw = null, n = 0
+    for (const get of getters) { const r = psd(segs.map(get), nf); n = r.n; pw = pw ? pw.map((v, i) => v + r.pw[i]) : Float64Array.from(r.pw) }
+    for (let k = 0; k < pw.length; k++) pw[k] /= getters.length
+    return { name, color, pw, n, m: alphaMetrics(pw) }
+  }
+  const e = eRaw === 'ears' ? 'ears' : +eRaw
+  let sigs = []
+  if (mode === 'blocks') {
+    const labels = [...new Set(rec.blocks.filter((b) => b.t1 != null).map((b) => b.label))].filter((n) => usableBlocks(n).length)
+    const getters = e === 'ears' ? [(X) => derive(X, 0, 'device'), (X) => derive(X, 3, 'device')] : [(X) => derive(X, e, 'device')]
+    sigs = labels.map((label, i) => mk(label, LAB_PALETTE[i % LAB_PALETTE.length], labelSegs(label), getters))
+  } else {
+    const segs = labSegments(cond)
+    if (!segs.length) { lab.res = null; return }
+    sigs = mode === 'channels'
+      ? [0, 3, 1, 2].map((c) => mk(ELECTRODES[c], COLORS[c], segs, [(X) => derive(X, c, 'device')]))
+      : REFERENCES.map((r, i) => mk(r.label, ['#e6e9ef', '#4da3ff', '#3ecf8e', '#ef7b5b'][i], segs, [(X) => derive(X, e === 'ears' ? 0 : e, r.id)]))
+  }
+  lab.res = { mode, max, nf, cond, e: e === 'ears' ? 'ears' : e, sigs }
 }
+const labelSegs = (label) => labSegments(label)
 function drawLab() {
   if ($('lab').hidden) return
   computeLab()
   const [g, w, h] = fit($('cv-lab')); g.clearRect(0, 0, w, h)
-  const R = lab.res; if (!R) return
+  const R = lab.res; if (!R || !R.sigs.length) return
   const k0 = Math.round(1 / DF) - 1, nf = R.nf
   const db = (v) => 10 * Math.log10(Math.max(v, 1e-12))
   let lo = Infinity, hi = -Infinity
@@ -710,20 +768,29 @@ function drawLab() {
     for (let k = k0; k < nf; k++) { const x = fx(FREQS[k]), y = yOf(db(s.pw[k])); k === k0 ? g.moveTo(x, y) : g.lineTo(x, y) }
     g.stroke(); g.lineWidth = 1
     if (s.m.strength !== 'none') { const x = fx(s.m.iaf); g.fillStyle = s.color; g.beginPath(); g.moveTo(x, 16); g.lineTo(x - 4, 8); g.lineTo(x + 4, 8); g.closePath(); g.fill() }
-    g.fillStyle = s.color; g.fillText(s.name, L + 6 + (si % 2) * 190, 24 + Math.floor(si / 2) * 13)
+    g.fillStyle = s.color; g.textAlign = 'right'; g.fillText(s.name, w - 10, 14 + si * 13); g.textAlign = 'left'
   })
   const base = R.sigs[0].m
-  $('lab-table').innerHTML = `<table><tr><th>Signal</th><th>alpha power (8–13 Hz)</th><th>alpha peak (IAF)</th><th>peak above 1/f</th></tr>` +
-    R.sigs.map((s, i) => `<tr><td style="color:${s.color}">${s.name}</td><td>${s.m.bandDb.toFixed(1)} dB${i && R.mode === 'reference' ? ` <span class="${s.m.bandDb - base.bandDb >= 0 ? 'up' : 'down'}">(${s.m.bandDb - base.bandDb >= 0 ? '+' : ''}${(s.m.bandDb - base.bandDb).toFixed(1)})</span>` : ''}</td><td>${peakLabel(s.m)}</td><td>${s.m.strength === 'none' ? '–' : s.m.height.toFixed(1) + ' dB'}</td></tr>`).join('') + '</table>'
+  const deltaKey = R.mode === 'reference' ? 'bandDb' : R.mode === 'blocks' ? 'aboveDb' : null
+  const dcell = (s, key, i) => (i && deltaKey === key ? ` <span class="${s.m[key] - base[key] >= 0 ? 'up' : 'down'}">(${s.m[key] - base[key] >= 0 ? '+' : ''}${(s.m[key] - base[key]).toFixed(1)})</span>` : '')
+  $('lab-table').innerHTML = `<table><tr><th>${R.mode === 'blocks' ? 'Block' : 'Signal'}</th><th>raw 8–13 Hz power</th><th>alpha above 1/f background</th><th>alpha peak (IAF)</th><th>peak above 1/f</th></tr>` +
+    R.sigs.map((s, i) => `<tr><td style="color:${s.color}">${s.name}</td><td>${s.m.bandDb.toFixed(1)} dB${dcell(s, 'bandDb', i)}</td><td>${s.m.aboveDb.toFixed(1)} dB${dcell(s, 'aboveDb', i)}</td><td>${peakLabel(s.m)}</td><td>${s.m.strength === 'none' ? '–' : s.m.height.toFixed(1) + ' dB'}</td></tr>`).join('') + '</table>'
+  const eName = R.e === 'ears' ? 'both ears (TP9 + TP10)' : ELECTRODES[R.e]
   let note = ''
   if (R.mode === 'reference') {
-    const pw = R.sigs.map((s) => s.m.bandDb), pf = R.sigs.filter((s) => s.m.strength !== 'none').map((s) => s.m.iaf)
-    note = `Same recording, ${ELECTRODES[R.e]}: alpha power spans ${(Math.max(...pw) - Math.min(...pw)).toFixed(1)} dB across references` + (pf.length > 1 ? `, while the peak frequency moves by only ${(Math.max(...pf) - Math.min(...pf)).toFixed(2)} Hz.` : pf.length === 1 ? ', and only one reference still shows a clear peak.' : ' — none shows a clear peak.') + ' With only four electrodes an “average reference” is a rough approximation.'
+    const pw = R.sigs.map((s) => s.m.bandDb), clear = R.sigs.filter((s) => s.m.strength === 'clear').map((s) => s.m.iaf)
+    note = `Same recording, ${eName}: raw alpha power spans ${(Math.max(...pw) - Math.min(...pw)).toFixed(1)} dB across references` +
+      (clear.length > 1 ? `, while the clear peak moves by only ${(Math.max(...clear) - Math.min(...clear)).toFixed(2)} Hz.` : ', and the peaks here are too weak (under 3 dB above background) to compare their position reliably.') +
+      ' With only four electrodes an “average reference” is a rough approximation.' +
+      (R.e === 0 || R.e === 3 ? ' For an ear electrode, “linked ears” and “bipolar” have the same shape: linked = bipolar ÷ 2, so it sits 6 dB lower.' : '')
+  } else if (R.mode === 'blocks') {
+    const best = R.sigs.reduce((a, b) => (b.m.aboveDb > a.m.aboveDb ? b : a))
+    note = `${eName}: alpha above the 1/f background is highest in “${best.name}” (${best.m.aboveDb.toFixed(1)} dB). Raw 8–13 Hz power can mislead when the low-frequency background differs between blocks (eye movements, blinks); “above 1/f background” and the peak columns correct for that.`
   } else {
     const t9 = R.sigs.find((s) => s.name === 'TP9').m, t10 = R.sigs.find((s) => s.name === 'TP10').m
-    note = `TP9 vs TP10: alpha power differs by ${Math.abs(t9.bandDb - t10.bandDb).toFixed(1)} dB; peaks ${peakLabel(t9)} vs ${peakLabel(t10)}. Check both ear contacts were green — a poor ear sensor can hide alpha.`
+    note = `TP9 vs TP10: alpha above background differs by ${Math.abs(t9.aboveDb - t10.aboveDb).toFixed(1)} dB; peaks ${peakLabel(t9)} vs ${peakLabel(t10)}. Check both ear contacts were green — a poor ear sensor can hide alpha.`
   }
-  $('lab-note').textContent = note + `  [${R.sigs[0].n} windows of 4 s, ${usableBlocks(R.cond).length} block(s)]`
+  $('lab-note').textContent = note + `  [${R.sigs[0].n} windows of 4 s${R.mode === 'blocks' ? ' (first block)' : `, ${usableBlocks(R.cond).length} block(s)`}]`
 }
 for (const id of ['lab-cond', 'lab-mode', 'lab-e', 'lab-max']) $(id).addEventListener('change', () => { lab.key = '' })
 
@@ -763,13 +830,15 @@ function downloadZip() {
     { name: `${tag}/accelerometer.csv`, text: 'time_s,x,y,z,condition\n' + rec.accRows.map((r) => `${(r[0] / 1000).toFixed(3)},${r[1].toFixed(4)},${r[2].toFixed(4)},${r[3].toFixed(4)},${csvQuote(r[4])}`).join('\n') + '\n' },
     { name: `${tag}/ppg_infrared.csv`, text: 'time_s,ppg_ir,condition\n' + rec.ppgRows.map((r) => `${(r[0] / 1000).toFixed(3)},${r[1]},${csvQuote(r[2])}`).join('\n') + '\n' },
     { name: `${tag}/blocks.csv`, text: 'condition,start_s,end_s,settle_s\n' + rec.blocks.map((b) => `${csvQuote(b.label)},${((b.t0 - rec.t0) / 1000).toFixed(3)},${b.t1 == null ? '' : ((b.t1 - rec.t0) / 1000).toFixed(3)},${b.settle ?? SETTLE_S}`).join('\n') + '\n' },
-    { name: `${tag}/README.txt`, text: 'Brain Dynamics Lab (PSYC 20N)\neeg.csv: raw EEG, microvolts, 256 Hz. bands.csv (~2 Hz): rel_* = nouscope-style relative band shares (1/f-corrected, sum to 1; delta 0 unless included; valid when rel_ready=1, ~15 s after connecting); abs_*_dB = absolute band power in dB re 1 µV² (delta 1-3 Hz, theta 4-7, alpha 8-12, beta 13-29, gamma 30-40); channels = which electrodes were used (weighted = best-contact auto, posterior = TP9+TP10, frontal = AF7+AF8, all, or a single electrode tp9/tp10/af7/af8).\nsignal_quality.csv: muse-lsl HSI per channel (0 good, 1 ok, 2 poor) + peak-to-peak µV, 2 Hz. accelerometer.csv: g, 52 Hz. ppg_infrared.csv: raw counts, 64 Hz. blocks.csv: start/stop of each condition (settle_s = seconds ignored at the start of each block in summaries).\nTimes are seconds since the first EEG sample.\n' },
+    { name: `${tag}/README.txt`, text: 'Brain Dynamics Lab (PSYC 20N)\neeg.csv: raw EEG, microvolts, 256 Hz. bands.csv (~2 Hz): rel_* = nouscope-style relative band shares (1/f-corrected, sum to 1; delta 0 unless included; valid when rel_ready=1, ~15 s after connecting); abs_*_dB = absolute band power in dB re 1 µV² (delta 1-3 Hz, theta 4-7, alpha 8-12, beta 13-29, gamma 30-40); channels = channel mode and the electrodes actually used, e.g. weighted:TP9+TP10 (weighted = best-contact auto, locked at the first block of a recording; posterior = TP9+TP10, frontal = AF7+AF8, all, or a single electrode tp9/tp10/af7/af8).\nsignal_quality.csv: muse-lsl HSI per channel (0 good, 1 ok, 2 poor) + peak-to-peak µV, 2 Hz. accelerometer.csv: g, 52 Hz. ppg_infrared.csv: raw counts, 64 Hz. blocks.csv: start/stop of each condition (settle_s = seconds ignored at the start of each block in summaries).\nTimes are seconds since the first EEG sample.\n' },
   ]
   const a = document.createElement('a'); a.href = URL.createObjectURL(makeZip(files)); a.download = `${tag}.zip`; a.click()
   setTimeout(() => URL.revokeObjectURL(a.href), 4000)
 }
 $('btn-download').addEventListener('click', downloadZip)
-$('ch-mode').addEventListener('change', (e) => { pipe.channelMode = e.target.value; spec.cols = []; updateChannelWarning() })
+function setChannelMode(v) { $('ch-mode').value = v; pipe.channelMode = v; pipe.unlockWeights(); spec.cols = []; updateChannelWarning() }
+$('ch-mode').addEventListener('change', (e) => setChannelMode(e.target.value))
+if (weekCfg && weekCfg.channels) setChannelMode(weekCfg.channels)
 $('pwr-mode').addEventListener('change', (e) => { $('delta-label').hidden = e.target.value === 'absolute' })
 $('chk-delta').addEventListener('change', (e) => {
   pipe.normalizeBands = new Set(e.target.checked ? BANDS : ['theta', 'alpha', 'beta', 'gamma'])
