@@ -24,12 +24,12 @@ function tables() {
 }
 
 /** Welch-style average PSD (µV²/Hz at FREQS) over the windows of the given segments. segs: array of Float64Array. */
-export function psd(segs, nf = NF) {
+export function psd(segs, nf = NF, hop = HOP) {
   const { cos, sin } = tables()
   const pw = new Float64Array(NF); let n = 0
   const x = new Float64Array(WIN)
   for (const s of segs) {
-    for (let st = 0; st + WIN <= s.length; st += HOP) {
+    for (let st = 0; st + WIN <= s.length; st += hop) {
       let m = 0; for (let i = 0; i < WIN; i++) m += s[st + i]; m /= WIN
       for (let i = 0; i < WIN; i++) x[i] = s[st + i] - m
       for (let k = 0; k < nf; k++) {
@@ -96,9 +96,9 @@ export function peakAbove(f, db, lo = 7.5, hi = 13.5, margin = 1) {
 }
 
 /** Background (aperiodic) fit used for "above background": line through log f vs dB on 2–6 and 15–35 Hz. */
-function backgroundFit(f, db) {
+function backgroundFit(f, db, ranges = [[2, 6], [15, 35]]) {
   const xs = [], ys = []
-  for (let k = 0; k < f.length; k++) if ((f[k] >= 2 && f[k] <= 6) || (f[k] >= 15 && f[k] <= 35)) { xs.push(Math.log10(f[k])); ys.push(db[k]) }
+  for (let k = 0; k < f.length; k++) if (ranges.some(([a, b]) => f[k] >= a && f[k] <= b)) { xs.push(Math.log10(f[k])); ys.push(db[k]) }
   const n = xs.length; let sx = 0, sy = 0, sxx = 0, sxy = 0
   for (let i = 0; i < n; i++) { sx += xs[i]; sy += ys[i]; sxx += xs[i] * xs[i]; sxy += xs[i] * ys[i] }
   const b = (n * sxy - sx * sy) / (n * sxx - sx * sx)
@@ -117,6 +117,23 @@ export function alphaMetrics(pw) {
     if (FREQS[k] >= 8 && FREQS[k] < 13) { band += pw[k] * DF; bg += Math.pow(10, (fit.a + fit.b * Math.log10(FREQS[k])) / 10) * DF }
   }
   return { bandDb: dB(band), aboveDb: dB(band) - dB(bg), ...peakAbove(FREQS, db) }
+}
+
+/** Power in [lo, hi) Hz from a PSD: raw (dB re 1 µV²) and relative to a 1/f background fitted outside the band.
+ *  Default fit ranges suit alpha; for theta pass e.g. [[1.5, 3], [14, 35]]. */
+export function bandMetrics(pw, lo, hi, fitRanges) {
+  const db = Array.from(pw, dB), fit = backgroundFit(FREQS, db, fitRanges)
+  let band = 0, bg = 0
+  for (let k = 0; k < NF; k++) if (FREQS[k] >= lo && FREQS[k] < hi) { band += pw[k] * DF; bg += Math.pow(10, (fit.a + fit.b * Math.log10(FREQS[k])) / 10) * DF }
+  return { rawDb: dB(band), aboveDb: dB(band) - dB(bg) }
+}
+
+/** Mean PSD over several derived signals (e.g. both ears), from segments X = [tp9, af7, af8, tp10]. */
+export function meanPsd(segs, electrodes, nf = NF, hop = HOP) {
+  let pw = null, n = 0
+  for (const e of electrodes) { const r = psd(segs.map((X) => derive(X, e, 'device')), nf, hop); n = r.n; pw = pw ? pw.map((v, i) => v + r.pw[i]) : Float64Array.from(r.pw) }
+  for (let k = 0; k < pw.length; k++) pw[k] /= electrodes.length
+  return { pw, n }
 }
 
 export const peakLabel = (m) => (m.strength === 'none' ? 'no clear peak' : `${m.iaf.toFixed(1)} Hz${m.strength === 'weak' ? ' (weak)' : ''}`)

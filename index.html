@@ -26,8 +26,17 @@
 
 <div id="cue" hidden>
   <div id="cue-main"><span id="cue-label"></span><span id="cue-plus">+</span><span id="cue-time"></span></div>
+  <button id="btn-press" hidden>Mind wandered — press (or spacebar)</button>
   <div id="cue-sub"></div>
   <div id="cue-bar"><i></i></div>
+</div>
+
+<div id="modal" hidden>
+  <div id="modal-card">
+    <h2 id="modal-title"></h2>
+    <div id="modal-body"></div>
+    <div id="modal-foot"><span id="modal-timer"></span><button id="modal-btn" class="primary"></button></div>
+  </div>
 </div>
 
 <div id="banner" hidden>
@@ -115,6 +124,10 @@
     </div>
 
     <div id="markers"></div>
+    <div class="rec-row">
+      <label class="sub">Participant <input id="participant" maxlength="12" placeholder="initials" style="width:84px"></label>
+      <label class="sub"><input type="checkbox" id="chk-press"> spacebar marks “my mind wandered” (key presses)</label>
+    </div>
     <div class="rec-row"><label class="sub"><input type="checkbox" id="chk-fix"> show a big fixation cross (+) in the middle of the screen during blocks</label></div>
     <div class="rec-row">
       <input id="custom-label" placeholder="…or type your own condition" maxlength="40">
@@ -131,9 +144,12 @@
         <select id="seq-select">
           <option value="alpha">Find your alpha: eyes open → closed → open</option>
           <option value="abab">A–B–A–B with two of my conditions</option>
+          <option value="meditation">Meditation practices: rest, then focused attention and open monitoring</option>
+          <option value="press">Mind wandering: focused attention + key presses</option>
         </select>
+        <label class="sub" id="med-opts" hidden>order <select id="med-order"><option value="fa-om">focused attention first</option><option value="om-fa">open monitoring first</option></select></label>
         <label class="sub" id="seq-ab">A <select id="seq-a"></select> B <select id="seq-b"></select> ×<select id="seq-reps"><option>1</option><option selected>2</option><option>3</option></select></label>
-        <label class="sub">block <input id="seq-len" type="number" min="10" max="180" step="5" value="45" style="width:56px"> s</label>
+        <label class="sub">block <input id="seq-len" type="number" min="10" max="600" step="5" value="45" style="width:60px"> s</label>
         <label class="sub"><input type="checkbox" id="seq-beep"> beep</label>
       </div>
       <div class="rec-row">
@@ -181,6 +197,27 @@
     </div>
       </div>
     </div>
+  </section>
+
+  <section id="panel-practice" class="panel" hidden>
+    <div class="panel-head"><h2>Practice results</h2>
+      <span class="sub">alpha at the ears · theta at the forehead · your ratings</span><div class="spacer"></div>
+      <button id="btn-practice-card">Save results card (.png)</button></div>
+    <div id="practice-table"></div>
+    <div id="practice-note" class="sub"></div>
+  </section>
+
+  <section id="panel-events" class="panel" hidden>
+    <div class="panel-head"><h2>Mind-wandering windows</h2>
+      <span class="sub">−10 s → key press → +10 s</span>
+      <label class="sub">Block <select id="ev-block"></select></label>
+      <label class="sub">Channels <select id="ev-ch"><option value="ears">Ears (TP9 + TP10)</option><option value="fore">Forehead (AF7 + AF8)</option><option value="all">All four</option></select></label>
+    </div>
+    <div id="ev-summary" class="sub"></div>
+    <canvas id="cv-ev-avg"></canvas>
+    <div class="sub" style="margin:8px 0 4px">Spectrogram around each press (1–30 Hz, brighter = more power than usual at that frequency; red line = press)</div>
+    <canvas id="cv-ev-spec"></canvas>
+    <div id="ev-note" class="sub"></div>
   </section>
 </main>
 

@@ -4,8 +4,9 @@ import { BandPipeline, HeartRate, BANDS, SPEC_BINS } from './dsp.js'
 import { HSI, LEVEL, REASON } from './quality.js'
 import { makeZip } from './zip.js'
 import { SampleClock } from './clock.js'
-import { WEEKS, CLAIMS, BAND_BINS, BAND_NAMES } from './weeks.js'
-import { psd, derive, alphaMetrics, peakAbove, peakLabel, FREQS, NF, DF, REFERENCES, ELECTRODES } from './spectrum.js'
+import { WEEKS, CLAIMS, BAND_BINS, BAND_NAMES, SCRIPTS, RATINGS } from './weeks.js'
+import { slidingSpectra, bandSeries, motionSeries, epochsAround, meanEpoch, permutationBand, STEP_S, NF as EV_NF } from './events.js'
+import { psd, derive, alphaMetrics, bandMetrics, meanPsd, peakAbove, peakLabel, FREQS, NF, DF, REFERENCES, ELECTRODES } from './spectrum.js'
 
 // ---------- constants ----------
 const FS = 256                 // EEG sample rate
@@ -70,7 +71,7 @@ const hsi = new HSI()
 pipe.useExternalQuality = true          // channel weights come from the muse-lsl HSI, not nouscope's RMS rule
 const acc = { x: new Float32Array(ACC_N), y: new Float32Array(ACC_N), z: new Float32Array(ACC_N), n: 0 }
 const rec = { t0: null, rows: [], blocks: [], current: null, blockT0: 0, curSettle: SETTLE_S, selected: null, claim: null,
-              bandRows: [], bandHist: [], specRows: [], accRows: [], ppgRows: [], quality: [] }
+              bandRows: [], bandHist: [], specRows: [], accRows: [], ppgRows: [], quality: [], events: [] }
 const spec = { cols: [] }
 let lastTs = 0, batteryPct = null
 const clock = new SampleClock(FS)
@@ -146,7 +147,7 @@ function resetData() {
   eeg.n = 0; eeg.hpInit = false; eeg.disp.forEach((x) => x.fill(0)); eeg.t.fill(0)
   pipe.reset(); hr.reset()
   spec.cols = []; hsi.reset(); clock.reset(); acc.n = 0; batteryPct = null
-  rec.rows = []; rec.blocks = []; rec.current = null; rec.bandRows = []; rec.bandHist = []; rec.specRows = []; rec.accRows = []; rec.ppgRows = []; rec.quality = []
+  rec.rows = []; rec.blocks = []; rec.current = null; rec.bandRows = []; rec.bandHist = []; rec.specRows = []; rec.accRows = []; rec.ppgRows = []; rec.quality = []; rec.events = []
   updateCurrentUi(); updateBattery()
 }
 
@@ -230,6 +231,14 @@ function fit(cv) {
   const g = cv.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0)
   return [g, cv.clientWidth, cv.clientHeight]
 }
+/** Key presses ("my mind wandered"): a red tick with a small triangle at the top. */
+function drawPresses(g, xOf, xMin, xMax, hgt) {
+  for (const ev of rec.events) {
+    const x = xOf(ev.t); if (x < xMin || x > xMax) continue
+    g.strokeStyle = 'rgba(239,91,91,0.85)'; g.lineWidth = 1.5; g.beginPath(); g.moveTo(x, 0); g.lineTo(x, hgt); g.stroke(); g.lineWidth = 1
+    g.fillStyle = '#ef5b5b'; g.beginPath(); g.moveTo(x, 8); g.lineTo(x - 4, 0); g.lineTo(x + 4, 0); g.closePath(); g.fill()
+  }
+}
 /** Shade each experiment block and mark its start/stop edges. xOf maps ms → x. */
 function drawBlocks(g, xOf, xMin, xMax, hgt, labelY) {
   for (const b of rec.blocks) {
@@ -257,6 +266,7 @@ function drawEeg() {
   }
   if (!eeg.n) { g.fillStyle = '#8b95a8'; g.fillText('Connect a Muse (or start Practice mode) to see your EEG.', 80, h / 2); return }
   drawBlocks(g, xOf, 0, w, h, h - 6)
+  drawPresses(g, xOf, 0, w, h)
   const count = Math.min(eeg.n, N - 1)
   for (let c = 0; c < 4; c++) {
     g.strokeStyle = COLORS[c]; g.lineWidth = 1; g.beginPath()
@@ -354,6 +364,7 @@ function drawBands() {
   const tR = hist[hist.length - 1].t
   const xOf = (t) => 30 + (w - 30) * (1 - (tR - t) / BAND_WIN_MS)
   drawBlocks(g, xOf, 30, w, h - 14, 12)
+  drawPresses(g, xOf, 30, w, h - 14)
   BANDS.forEach((b, bi) => {
     if (b === 'delta' && !withDelta) return
     g.strokeStyle = BAND_COLORS[b]; g.lineWidth = b === 'alpha' ? 2.5 : 1.5; g.beginPath()
@@ -476,7 +487,14 @@ function applyClaim(id) {
 function readPrediction() { rec.prediction = { band: $('pred-band').value, dir: $('pred-dir').value } }
 
 // ---------- guided runs: the app runs the blocks; teammates watch the big cue ----------
+// A run is a list of steps. Each step can have a read-aloud script screen before its block and a ratings screen
+// after it. Phases: pre (countdown) → [script → block → rate] per step → done.
+const timeScale = +params.get('timescale') || 1       // dev/rehearsal: ?timescale=6 runs guided blocks 6× faster
 const CUE = [
+  [/key presses/i, 'Focused attention — press the SPACEBAR when you notice your mind has wandered, then return.'],
+  [/focused attention/i, 'Focused attention — eyes closed, repeat your calming word, stay still.'],
+  [/open monitoring/i, 'Open monitoring — eyes closed, notice whatever arises, stay still.'],
+  [/rest \(eyes closed\)/i, 'Rest — eyes closed, stay still.'],
   [/closed/i, 'Close your eyes and relax — stay still (don’t squeeze).'],
   [/open/i, 'Eyes open — look at one fixed spot, stay still.'],
   [/arith|math/i, 'Silent mental arithmetic — no talking, stay still.'],
@@ -485,6 +503,7 @@ const CUE = [
   [/rest/i, 'Rest quietly — stay still.'],
 ]
 const cueText = (label) => (CUE.find(([re]) => re.test(label)) || [0, ''])[1]
+const NO_FIX = /closed|medit|focused attention|open monitoring/i      // eyes closed: no fixation cross
 let audioCtx = null
 function beep(freq = 880, ms = 120) {
   if (!$('seq-beep').checked) return
@@ -502,16 +521,87 @@ function refreshSeqSelects() {
     else sel.value = conditions[id === 'seq-a' ? 0 : Math.min(1, conditions.length - 1)] || ''
   }
 }
-$('seq-select').addEventListener('change', () => { $('seq-ab').hidden = $('seq-select').value !== 'abab' })
-$('seq-ab').hidden = true
+const SEQ_LEN = { alpha: 45, abab: 45, meditation: 180, press: 240 }
+function onSeqSelect() {
+  const v = $('seq-select').value
+  $('seq-ab').hidden = v !== 'abab'
+  $('med-opts').hidden = v !== 'meditation'
+  $('seq-len').value = SEQ_LEN[v]
+}
+$('seq-select').addEventListener('change', onSeqSelect)
+onSeqSelect()
+
 function buildSteps() {
-  const len = Math.max(10, +$('seq-len').value || 45)
-  if ($('seq-select').value === 'alpha') return ['Eyes open (1)', 'Eyes closed', 'Eyes open (2)'].map((label) => ({ label, sec: len, settle: 5 }))
+  const v = $('seq-select').value, len = Math.max(10, +$('seq-len').value || SEQ_LEN[v])
+  const T = (x) => Math.max(3, Math.round(x / timeScale)), S = (x) => Math.max(2, Math.round(x / timeScale))
+  if (v === 'alpha') return ['Eyes open (1)', 'Eyes closed', 'Eyes open (2)'].map((label) => ({ label, sec: T(len), settle: S(5) }))
+  if (v === 'meditation') {
+    const order = $('med-order').value === 'om-fa' ? ['om', 'fa'] : ['fa', 'om'], name = { fa: 'Focused attention', om: 'Open monitoring' }
+    return [
+      { label: 'Rest (eyes closed)', sec: T(60), settle: S(10), script: SCRIPTS.rest, scriptSec: T(25), rate: false, closed: true },
+      ...order.map((k) => ({ label: name[k], sec: T(len), settle: S(10), script: SCRIPTS[k], scriptSec: T(50), rate: true, closed: true })),
+    ]
+  }
+  if (v === 'press') return [{ label: 'Focused attention + key presses', sec: T(len), settle: S(10), script: SCRIPTS.press, scriptSec: T(50), rate: true, closed: true, press: true }]
   const A = $('seq-a').value, B = $('seq-b').value, reps = +$('seq-reps').value, steps = []
   if (!A || !B || A === B) return []
-  for (let r = 0; r < reps; r++) steps.push({ label: A, sec: len, settle: 3 }, { label: B, sec: len, settle: 3 })
+  for (let r = 0; r < reps; r++) steps.push({ label: A, sec: T(len), settle: S(3) }, { label: B, sec: T(len), settle: S(3) })
   return steps
 }
+
+// --- key presses ("my mind wandered") ---
+const press = { enabled: false }
+const pressCount = () => (rec.current ? rec.events.filter((e) => e.block === rec.current && e.t >= rec.blockT0).length : 0)
+function setPress(on, locked = false) {
+  press.enabled = on; $('chk-press').checked = on; $('chk-press').disabled = locked
+  $('btn-press').hidden = !on || !rec.current
+  if (on) document.activeElement?.blur?.()          // a focused button would otherwise react to the spacebar
+}
+function recordPress() {
+  if (!press.enabled || !rec.current) return false
+  rec.events.push({ t: nowMs(), block: rec.current })
+  const el = $('cue'); el.classList.add('flash'); setTimeout(() => el.classList.remove('flash'), 220)
+  return true
+}
+document.addEventListener('keydown', (e) => {
+  if (e.code !== 'Space' || !press.enabled || !rec.current) return
+  e.preventDefault(); if (!e.repeat) recordPress()
+}, true)
+document.addEventListener('keyup', (e) => { if (e.code === 'Space' && press.enabled && rec.current) e.preventDefault() }, true)
+$('btn-press').addEventListener('click', recordPress)
+$('chk-press').addEventListener('change', (e) => { if (!seq.active) setPress(e.target.checked) })
+
+// --- modal: read-aloud script / ratings ---
+function showModal(title, html, btnText, onBtn) {
+  $('modal-title').textContent = title; $('modal-body').innerHTML = html
+  $('modal-btn').textContent = btnText; $('modal-btn').onclick = onBtn; $('modal-btn').disabled = false
+  $('modal-timer').textContent = ''; $('modal').hidden = false; $('cue').hidden = true
+}
+function hideModal() { $('modal').hidden = true; $('modal-btn').onclick = null }
+function showScript(st) {
+  showModal(`Read aloud: ${st.script.title}`,
+    `<div class="modal-sub">Reader: speak slowly and quietly. When you finish, stay silent — the block starts automatically (or press the button when the participant is ready).</div>` +
+    st.script.lines.map((l) => `<p class="script-line">${l}</p>`).join('') +
+    `<div class="modal-sub">${st.closed ? 'Participant: close your eyes when you are ready.' : ''} Next: ${st.label}, ${st.sec >= 60 ? Math.round(st.sec / 6) / 10 + ' min' : st.sec + ' s'}.</div>`,
+    '▶ Start the block now', beginBlock)
+}
+function showRatings(st) {
+  const ans = {}
+  const body = `<div class="modal-sub">Answer right away, about the practice you just did (“${st.label}”). 1 – 5.</div>` +
+    RATINGS.map((r) => `<div class="rate-row" data-r="${r.id}"><div class="rate-q"><b>${r.name}</b>${r.q}</div>
+      <div class="rate-btns"><span class="rate-lab">${r.lo}</span>${[1, 2, 3, 4, 5].map((n) => `<button data-v="${n}">${n}</button>`).join('')}<span class="rate-lab r">${r.hi}</span></div></div>`).join('')
+  showModal(`Ratings — ${st.label}`, body, 'Continue', () => {
+    const blk = seq.lastBlock; if (blk) blk.ratings = { ...ans }
+    hideModal(); nextStep()
+  })
+  $('modal-btn').disabled = true
+  $('modal-body').querySelectorAll('.rate-row').forEach((row) => row.querySelectorAll('button').forEach((b) => b.addEventListener('click', () => {
+    ans[row.dataset.r] = +b.dataset.v
+    row.querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b))
+    $('modal-btn').disabled = RATINGS.some((r) => ans[r.id] == null)
+  })))
+}
+
 function showCue(cls, label, time, sub, frac, opts = {}) {
   const el = $('cue'); el.hidden = false; el.className = cls; el.dataset.src = opts.src || 'seq'
   $('cue-plus').style.visibility = opts.plus ? 'visible' : 'hidden'
@@ -532,37 +622,62 @@ function startSeq() {
   endBlock()
   for (const st of steps) if (!conditions.includes(st.label)) conditions.push(st.label)
   renderConditionButtons()
-  Object.assign(seq, { active: true, steps, i: -1, pre: true, tStep: nowMs() })
+  Object.assign(seq, { active: true, steps, i: -1, phase: 'pre', tPhase: nowMs(), lastBlock: null })
   updateCurrentUi(); beep(660); seqTick()
 }
 function stopSeq(msg) {
   if (!seq.active) return
-  seq.active = false; endBlock(); updateCurrentUi()
+  seq.active = false; hideModal(); endBlock(); setPress(false); updateCurrentUi()
   showCue('done', msg, '', 'Download your data when you are finished.', 1)
   setTimeout(() => { if (!seq.active) $('cue').hidden = true }, 8000)
 }
-function beginStep(i) {
-  seq.pre = false; seq.i = i; seq.tStep = nowMs()
-  rec.selected = seq.steps[i].label; startBlock(seq.steps[i].settle); beep(880)
+function enterStep(i) {
+  seq.i = i
+  const st = seq.steps[i]
+  if (st.script) { seq.phase = 'script'; seq.tPhase = nowMs(); showScript(st) } else beginBlock()
+}
+function beginBlock() {
+  hideModal()
+  const st = seq.steps[seq.i]
+  seq.phase = 'block'; seq.tPhase = nowMs()
+  rec.selected = st.label; startBlock(st.settle); beep(880)
+  setPress(!!st.press, true)
+}
+function afterBlock() {
+  const st = seq.steps[seq.i]
+  seq.lastBlock = rec.blocks[rec.blocks.length - 1]
+  endBlock(); setPress(false, false)
+  if (st.rate) { seq.phase = 'rate'; showRatings(st) } else nextStep()
+}
+function nextStep() {
+  if (seq.i + 1 < seq.steps.length) enterStep(seq.i + 1)
+  else { seq.active = false; seq.phase = ''; updateCurrentUi(); beep(660, 250); showCue('done', '✔ Done', '', 'All blocks recorded. Open the results below, then download your data.', 1); setTimeout(() => { if (!seq.active) $('cue').hidden = true }, 20000) }
 }
 function seqTick() {
   if (!seq.active) return
   if (!connected) { stopSeq('Guided run stopped — disconnected'); return }
   const t = nowMs()
-  if (seq.pre) {
-    const left = 5000 - (t - seq.tStep)
-    showCue('ready', 'Get ready…', `${Math.max(0, Math.ceil(left / 1000))} s`, `First: ${seq.steps[0].label}. ${cueText(seq.steps[0].label)}`, 1 - left / 5000, { plus: true })
-    if (left <= 0) beginStep(0)
+  if (seq.phase === 'pre') {
+    const left = 5000 - (t - seq.tPhase)
+    showCue('ready', 'Get ready…', `${Math.max(0, Math.ceil(left / 1000))} s`, `First: ${seq.steps[0].label}.`, 1 - left / 5000, { plus: !seq.steps[0].closed })
+    if (left <= 0) enterStep(0)
     return
   }
-  const st = seq.steps[seq.i], left = st.sec * 1000 - (t - seq.tStep)
-  const next = seq.steps[seq.i + 1]
-  showCue(/closed|medit/i.test(st.label) ? 'closed' : 'running', `● ${st.label.toUpperCase()}`, `${Math.max(0, Math.ceil(left / 1000))} s`,
-    `${cueText(st.label)}   ·   block ${seq.i + 1} of ${seq.steps.length}${next ? `   ·   next: ${next.label}` : '   ·   last block'}`, 1 - left / (st.sec * 1000), { plus: !/closed|medit/i.test(st.label) })
-  if (left <= 0) {
-    endBlock()
-    if (next) beginStep(seq.i + 1)
-    else { seq.active = false; updateCurrentUi(); beep(660, 250); showCue('done', '✔ Done', '', 'All blocks recorded. Open Compare / Spectrum lab below, then download your data.', 1); setTimeout(() => { if (!seq.active) $('cue').hidden = true }, 20000) }
+  const st = seq.steps[seq.i]
+  if (seq.phase === 'script') {
+    const left = st.scriptSec * 1000 - (t - seq.tPhase)
+    $('modal-timer').textContent = `The block starts automatically in ${Math.max(0, Math.ceil(left / 1000))} s`
+    if (left <= 0) beginBlock()
+    return
+  }
+  if (seq.phase === 'block') {
+    const left = st.sec * 1000 - (t - seq.tPhase), next = seq.steps[seq.i + 1]
+    const closed = st.closed ?? NO_FIX.test(st.label)
+    showCue(closed ? 'closed' : 'running', `● ${st.label.toUpperCase()}`, `${Math.max(0, Math.ceil(left / 1000))} s`,
+      `${cueText(st.label)}   ·   block ${seq.i + 1} of ${seq.steps.length}${next ? `   ·   next: ${next.label}` : '   ·   last block'}${st.press ? `   ·   key presses: ${pressCount()}` : ''}   ·   teammates: stay silent`,
+      1 - left / (st.sec * 1000), { plus: !closed })
+    $('btn-press').hidden = !(st.press && rec.current)
+    if (left <= 0) afterBlock()
   }
 }
 $('btn-seq').addEventListener('click', startSeq)
@@ -570,10 +685,11 @@ $('btn-seq-stop').addEventListener('click', () => stopSeq('Guided run stopped'))
 setInterval(seqTick, 200)
 
 // cue + fixation cross for manual Start/Stop blocks, and the optional big cross in the middle of the screen
-const NO_FIX = /closed|medit/i
 function updateFixOverlay() {
-  const label = seq.active ? (seq.pre ? seq.steps[0].label : seq.steps[seq.i].label) : rec.current
-  $('fix-overlay').hidden = !($('chk-fix').checked && label && !NO_FIX.test(label))
+  const st = seq.active && seq.steps[seq.i >= 0 ? seq.i : 0]
+  const label = seq.active ? (seq.phase === 'pre' ? seq.steps[0].label : seq.phase === 'block' ? st.label : null) : rec.current
+  const closed = seq.active && st ? (st.closed ?? NO_FIX.test(label || '')) : NO_FIX.test(label || '')
+  $('fix-overlay').hidden = !($('chk-fix').checked && label && !closed)
 }
 function manualCueTick() {
   updateFixOverlay()
@@ -582,8 +698,12 @@ function manualCueTick() {
   if (rec.current) {
     const closed = NO_FIX.test(rec.current), s = Math.max(0, Math.floor(blockAge()))
     showCue(closed ? 'closed' : 'running', `● ${rec.current.toUpperCase()}`, `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`,
-      cueText(rec.current) || 'Block running — press Stop when you finish.', 0, { plus: !closed, src: 'manual' })
-  } else if (!el.hidden && el.dataset.src === 'manual') el.hidden = true
+      (cueText(rec.current) || 'Block running — press Stop when you finish.') + (press.enabled ? `   ·   key presses: ${pressCount()}` : ''), 0, { plus: !closed, src: 'manual' })
+    $('btn-press').hidden = !press.enabled
+  } else {
+    if (!el.hidden && el.dataset.src === 'manual') el.hidden = true
+    $('btn-press').hidden = true
+  }
 }
 setInterval(manualCueTick, 200)
 $('chk-fix').addEventListener('change', updateFixOverlay)
@@ -817,11 +937,181 @@ function saveCard() {
 }
 $('btn-card').addEventListener('click', saveCard)
 
+// ---------- Practice results (Week 4): alpha at the ears, theta at the forehead, ratings ----------
+const PRACTICE_LABELS = ['Rest (eyes closed)', 'Focused attention', 'Open monitoring', 'Focused attention + key presses']
+const prac = { key: '', rows: [], html: '' }
+function computePractice() {
+  const labels = PRACTICE_LABELS.filter((l) => usableBlocks(l).length)
+  const key = [labels.join('|'), rec.blocks.filter((b) => b.t1 != null).length, rec.blocks.filter((b) => b.ratings).length, rec.events.length].join('#')
+  if (key === prac.key) return
+  prac.key = key
+  prac.rows = labels.map((label) => {
+    const segs = labSegments(label)
+    const ears = meanPsd(segs, [0, 3], 160, 512), fore = meanPsd(segs, [1, 2], 160, 512)
+    const rated = rec.blocks.filter((b) => b.label === label && b.ratings), rate = {}
+    for (const r of RATINGS) rate[r.id] = rated.length ? rated.reduce((s, b) => s + b.ratings[r.id], 0) / rated.length : null
+    return {
+      label, secs: usableBlocks(label).reduce((s, b) => s + (b.t1 - b.t0) / 1000 - (b.settle ?? SETTLE_S), 0),
+      alpha: alphaMetrics(ears.pw), theta: bandMetrics(fore.pw, 4, 8, [[1.5, 3], [14, 35]]), rate,
+      presses: rec.events.filter((e) => e.block === label).length,
+    }
+  })
+  prac.html = ''
+}
+const fnum = (v, d = 1) => (v == null ? '–' : v.toFixed(d))
+function practiceSummaryLine() {
+  const fa = prac.rows.find((r) => r.label === 'Focused attention'), om = prac.rows.find((r) => r.label === 'Open monitoring')
+  if (!fa || !om) return ''
+  const alphaHi = fa.alpha.aboveDb === om.alpha.aboveDb ? null : fa.alpha.aboveDb > om.alpha.aboveDb ? fa.label : om.label
+  const fs = fa.rate.stability, os = om.rate.stability
+  const stabHi = fs == null || os == null || fs === os ? null : fs > os ? fa.label : om.label
+  const haveRatings = fs != null && os != null
+  if (!alphaHi) return ''
+  return `Higher alpha (above 1/f, ears): ${alphaHi}.` + (stabHi ? ` Higher rated stability: ${stabHi}. ${stabHi === alphaHi ? 'They agree here' : 'They differ here'} — with one participant and two practices this is a description, not a test.` : haveRatings ? ' Stability was rated the same for both practices.' : ' Add ratings to compare with stability.')
+}
+function updatePracticePanel() {
+  computePractice()
+  $('panel-practice').hidden = !prac.rows.length
+  if (!prac.rows.length || prac.html) return
+  const th = (t) => `<th>${t}</th>`
+  prac.html = '<table><tr>' + ['Practice', 'time', 'alpha above 1/f (ears)', 'alpha peak (ears)', 'theta above 1/f (forehead)', 'Stability', 'Effort', 'Meta-aware.', 'Sleepiness', 'key presses'].map(th).join('') + '</tr>' +
+    prac.rows.map((r) => `<tr><td>${r.label}</td><td>${Math.round(r.secs)} s</td><td>${fnum(r.alpha.aboveDb)} dB</td><td>${peakLabel(r.alpha)}</td><td>${fnum(r.theta.aboveDb)} dB</td>` +
+      RATINGS.map((q) => `<td>${r.rate[q.id] == null ? '–' : fnum(r.rate[q.id], r.rate[q.id] % 1 ? 1 : 0)}</td>`).join('') + `<td>${r.presses || '–'}</td></tr>`).join('') + '</table>'
+  $('practice-table').innerHTML = prac.html
+  $('practice-note').textContent = (practiceSummaryLine() + ' “Above 1/f” compares band power with a smooth background fitted outside the band, so 0 dB means no bump. Alpha is read at the ears (TP9 + TP10) and theta at the forehead (AF7 + AF8); the Muse cannot see true frontal-midline theta. Ratings: 1 (low) – 5 (high).').trim()
+}
+function savePracticeCard() {
+  const cv = document.createElement('canvas'); cv.width = 1400; cv.height = 760
+  const g = cv.getContext('2d'); g.fillStyle = '#0f1218'; g.fillRect(0, 0, 1400, 760)
+  g.fillStyle = '#e6e9ef'; g.font = 'bold 34px sans-serif'; g.fillText('Brain Dynamics Lab · PSYC 20N — Meditation practices', 40, 56)
+  g.fillStyle = '#8b95a8'; g.font = '20px sans-serif'
+  const who = $('participant').value.trim()
+  g.fillText(`${who ? 'Participant ' + who + '   ·   ' : ''}${new Date().toLocaleDateString()}`, 40, 92)
+  const cols = [['Practice', 40, 'left'], ['alpha above 1/f (ears)', 420, 'right'], ['alpha peak', 560, 'right'], ['theta above 1/f (fh)', 740, 'right'], ['Stability', 850, 'right'], ['Effort', 940, 'right'], ['Meta-aware.', 1060, 'right'], ['Sleepy', 1150, 'right'], ['presses', 1250, 'right']]
+  g.font = 'bold 17px sans-serif'; g.fillStyle = '#e6e9ef'
+  for (const [t, x, al] of cols) { g.textAlign = al; g.fillText(t, x, 150) }
+  g.font = '19px sans-serif'; let y = 195
+  for (const r of prac.rows) {
+    const cells = [r.label, `${fnum(r.alpha.aboveDb)} dB`, peakLabel(r.alpha), `${fnum(r.theta.aboveDb)} dB`, ...RATINGS.map((q) => (r.rate[q.id] == null ? '–' : fnum(r.rate[q.id], r.rate[q.id] % 1 ? 1 : 0))), r.presses || '–']
+    cols.forEach(([, x, al], i) => { g.textAlign = al; g.fillStyle = i ? '#e6e9ef' : '#9ac8ff'; g.fillText(String(cells[i]), x, y) })
+    y += 44
+  }
+  g.textAlign = 'left'; g.fillStyle = '#e6e9ef'; g.font = '19px sans-serif'; y += 20
+  const note = practiceSummaryLine() || 'Compare each practice with rest, and your ratings with the EEG.'
+  let cur = ''
+  for (const wd of note.split(' ')) { if ((cur + wd).length > 120) { g.fillText(cur, 40, y); y += 28; cur = '' } cur += wd + ' ' }
+  g.fillText(cur, 40, y)
+  g.fillStyle = '#8b95a8'; g.font = '16px sans-serif'; g.fillText('bdl.stanford.edu/muse-web · classroom observation, not research data · one participant', 40, 740)
+  cv.toBlob((b) => { const a = document.createElement('a'); a.href = URL.createObjectURL(b); a.download = `practice-results-${Date.now()}.png`; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 3000) })
+}
+$('btn-practice-card').addEventListener('click', savePracticeCard)
+
+// ---------- Mind-wandering windows: −10 s → key press → +10 s ----------
+const evp = { key: '', res: null }
+const EV_COLORS = { theta: '#3ecf8e', alpha: '#f5b942', beta: '#ef7b5b', motion: '#ef5b5b' }
+function updateEventsOptions() {
+  const names = [...new Set(rec.events.map((e) => e.block))].filter((l) => rec.blocks.some((b) => b.label === l && b.t1 != null))
+  $('panel-events').hidden = !names.length
+  if (!names.length) return
+  const sel = $('ev-block'), cur = sel.value
+  if (sel.options.length !== names.length || [...sel.options].some((o, i) => o.value !== names[i])) {
+    sel.innerHTML = names.map((n) => `<option>${n}</option>`).join('')
+    sel.value = names.includes(cur) ? cur : names[names.length - 1]
+  }
+}
+function computeEvents() {
+  const label = $('ev-block').value, chSel = $('ev-ch').value
+  const cand = rec.blocks.filter((b) => b.label === label && b.t1 != null && rec.events.some((e) => e.block === label && e.t >= b.t0 && e.t <= b.t1))
+  const b = cand[cand.length - 1]
+  const key = [label, chSel, rec.events.length, b ? b.t1 : 0].join('|')
+  if (key === evp.key) return
+  evp.key = key
+  if (!b) { evp.res = null; return }
+  const i0 = lowerBound(b.t0 - rec.t0), i1 = lowerBound(b.t1 - rec.t0)
+  if (i1 - i0 < FS * 30) { evp.res = { tooShort: true }; return }
+  const chIdx = chSel === 'ears' ? [0, 3] : chSel === 'fore' ? [1, 2] : [0, 1, 2, 3]
+  const signals = chIdx.map((c) => { const a = new Float64Array(i1 - i0); for (let i = i0; i < i1; i++) a[i - i0] = rec.rows[i][1 + c]; return a })
+  const sp = slidingSpectra(signals)
+  const start = rec.rows[i0][0], end = rec.rows[i1 - 1][0]
+  const all = rec.events.filter((e) => e.block === label && e.t >= b.t0 && e.t <= b.t1).map((e) => (e.t - rec.t0 - start) / 1000)
+  const bands = { theta: [4, 8], alpha: [8, 13], beta: [13, 30] }
+  const series = {}
+  for (const [k, [lo, hi]] of Object.entries(bands)) series[k] = { s: bandSeries(sp, lo, hi), norm: true }
+  series.motion = { s: motionSeries(rec.accRows, start, end, sp.tc), norm: false }
+  const res = { label, chSel, total: all.length, series: {}, used: [], skipped: [], nw: sp.nw }
+  for (const [k, { s, norm }] of Object.entries(series)) {
+    const ep = epochsAround(s, sp.tc, all, 10, 10, norm)
+    if (!ep.epochs.length) continue
+    const avg = meanEpoch(ep.epochs), band = permutationBand(s, sp.tc, ep.used.length, 10, 10, norm, 300)
+    let nOut = 0; if (band) for (let q = 0; q < avg.length; q++) if (avg[q] > band.hi[q] || avg[q] < band.lo[q]) nOut++
+    res.series[k] = { epochs: ep.epochs, avg, band, nOut }
+    res.used = ep.used; res.skipped = ep.skipped
+  }
+  // mini spectrograms around each press (1–30 Hz, flattened by each frequency's block median)
+  const med = new Float32Array(EV_NF)
+  for (let f = 0; f < EV_NF; f++) { const v = []; for (let w = 0; w < sp.nw; w++) v.push(Math.log10(sp.S[w * EV_NF + f] + 1e-12)); v.sort((x, y) => x - y); med[f] = v[v.length >> 1] }
+  res.minis = res.used.map((p) => {
+    const W = 41, c = document.createElement('canvas'); c.width = W; c.height = EV_NF
+    const g = c.getContext('2d'), img = g.createImageData(W, EV_NF)
+    for (let k = 0; k < W; k++) {
+      const wi = Math.round((p - 10 + k * STEP_S - sp.tc[0]) / STEP_S)
+      for (let f = 0; f < EV_NF; f++) {
+        const v = Math.log10(sp.S[wi * EV_NF + f] + 1e-12) - med[f], [r, gg, bb] = viridis(0.5 + v / 1.6)
+        const o = ((EV_NF - 1 - f) * W + k) * 4; img.data[o] = r; img.data[o + 1] = gg; img.data[o + 2] = bb; img.data[o + 3] = 255
+      }
+    }
+    g.putImageData(img, 0, 0); return c
+  })
+  evp.res = res
+}
+function drawEventsPanel() {
+  if ($('panel-events').hidden) return
+  computeEvents()
+  const R = evp.res
+  const [g, w, h] = fit($('cv-ev-avg')); g.clearRect(0, 0, w, h)
+  const [g2, w2, h2] = fit($('cv-ev-spec')); g2.clearRect(0, 0, w2, h2)
+  if (!R) { $('ev-summary').textContent = ''; return }
+  if (R.tooShort) { $('ev-summary').textContent = 'This block is too short for a ±10 s analysis.'; return }
+  if (!R.used.length) { $('ev-summary').textContent = `${R.total} key press(es) in this block, but none has a full ±10 s window of data around it (presses in the first or last 10 s are skipped). Try a longer block.`; return }
+  $('ev-summary').textContent = `${R.used.length} of ${R.total} presses used` + (R.skipped.length ? ` (${R.skipped.length} too close to the start or end of the block)` : '') + `. Grey = each press; colour = their average; shaded = what random times give (95% range).`
+  const keys = ['theta', 'alpha', 'beta', 'motion'], titles = { theta: 'theta 4–8 Hz (change, dB)', alpha: 'alpha 8–13 Hz (change, dB)', beta: 'beta 13–30 Hz (change, dB)', motion: 'head movement (accelerometer, g)' }
+  const cw = w / 2, chh = h / 2, L = 38, pad = 18
+  keys.forEach((k, qi) => {
+    const S = R.series[k]; if (!S) return
+    const x0 = (qi % 2) * cw, y0 = Math.floor(qi / 2) * chh, pw = cw - L - 10, ph = chh - pad - 22
+    let lo = Infinity, hi = -Infinity
+    for (const e of S.epochs) for (const v of e) { if (v < lo) lo = v; if (v > hi) hi = v }
+    if (S.band) for (let q = 0; q < S.avg.length; q++) { lo = Math.min(lo, S.band.lo[q]); hi = Math.max(hi, S.band.hi[q]) }
+    if (hi - lo < 1e-9) { hi = lo + 1 }
+    const fx = (q) => x0 + L + (q / 40) * pw, fy = (v) => y0 + 22 + (1 - (v - lo) / (hi - lo)) * ph
+    g.fillStyle = '#c9d1e0'; g.font = '12px sans-serif'; g.fillText(titles[k], x0 + L, y0 + 14)
+    g.strokeStyle = '#1f2633'; g.strokeRect(x0 + L, y0 + 22, pw, ph)
+    if (S.band) { g.fillStyle = 'rgba(139,149,168,0.25)'; g.beginPath(); for (let q = 0; q < 41; q++) g.lineTo(fx(q), fy(S.band.hi[q])); for (let q = 40; q >= 0; q--) g.lineTo(fx(q), fy(S.band.lo[q])); g.closePath(); g.fill() }
+    g.strokeStyle = 'rgba(160,170,190,0.35)'; for (const e of S.epochs) { g.beginPath(); e.forEach((v, q) => (q ? g.lineTo(fx(q), fy(v)) : g.moveTo(fx(q), fy(v)))); g.stroke() }
+    g.strokeStyle = EV_COLORS[k]; g.lineWidth = 2.6; g.beginPath(); S.avg.forEach((v, q) => (q ? g.lineTo(fx(q), fy(v)) : g.moveTo(fx(q), fy(v)))); g.stroke(); g.lineWidth = 1
+    g.strokeStyle = '#ef5b5b'; g.setLineDash([4, 4]); g.beginPath(); g.moveTo(fx(20), y0 + 22); g.lineTo(fx(20), y0 + 22 + ph); g.stroke(); g.setLineDash([])
+    g.fillStyle = '#8b95a8'; for (const [q, t] of [[0, '−10 s'], [10, '−5'], [20, 'press'], [30, '+5'], [40, '+10 s']]) g.fillText(t, fx(q) - (q === 40 ? 28 : 10), y0 + 22 + ph + 13)
+    g.fillText(hi.toFixed(1), x0 + 2, y0 + 30); g.fillText(lo.toFixed(1), x0 + 2, y0 + 22 + ph)
+  })
+  const n = R.used.length, cols = Math.min(6, n), rows = Math.ceil(Math.min(n, 12) / cols), cwd = w2 / cols, chd = h2 / rows
+  g2.imageSmoothingEnabled = false; g2.font = '11px sans-serif'
+  R.minis.slice(0, 12).forEach((c, i) => {
+    const x = (i % cols) * cwd + 3, y = Math.floor(i / cols) * chd + 3
+    g2.drawImage(c, x, y + 12, cwd - 6, chd - 18)
+    g2.strokeStyle = '#ef5b5b'; g2.beginPath(); g2.moveTo(x + (cwd - 6) / 2, y + 12); g2.lineTo(x + (cwd - 6) / 2, y + chd - 6); g2.stroke()
+    g2.fillStyle = '#8b95a8'; g2.fillText(`press ${i + 1} (at ${R.used[i].toFixed(0)} s)`, x, y + 9)
+  })
+  const out = keys.filter((k) => R.series[k]).map((k) => `${k}: ${R.series[k].nOut}/41`).join(' · ')
+  $('ev-note').textContent = `Points where the average leaves the random-times band — ${out} (pure chance gives about 2 of 41 per panel). Few presses make averages noisy; the press itself moves the head, so check the movement panel before believing a change at 0 s. The press marks when you noticed you had wandered, not when the wandering began.`
+}
+for (const id of ['ev-block', 'ev-ch']) $(id).addEventListener('change', () => { evp.key = '' })
+
 const csvQuote = (s) => (/[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s)
 function downloadZip() {
   if (!rec.rows.length) return
   const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
-  const tag = `muse-${simulated ? 'practice-' : ''}${stamp}`
+  const who = ($('participant').value || '').trim().replace(/[^\w-]+/g, '')
+  const tag = `muse-${who ? who + '-' : ''}${simulated ? 'practice-' : ''}${stamp}`
   const f3 = (v) => v.toFixed(3)
   const files = [
     { name: `${tag}/eeg.csv`, text: 'time_s,TP9,AF7,AF8,TP10,condition\n' + rec.rows.map((r) => `${(r[0] / 1000).toFixed(4)},${r[1].toFixed(2)},${r[2].toFixed(2)},${r[3].toFixed(2)},${r[4].toFixed(2)},${csvQuote(r[5])}`).join('\n') + '\n' },
@@ -829,8 +1119,9 @@ function downloadZip() {
     { name: `${tag}/signal_quality.csv`, text: 'time_s,hsi_TP9,hsi_AF7,hsi_AF8,hsi_TP10,p2p_TP9,p2p_AF7,p2p_AF8,p2p_TP10\n' + rec.quality.map((r) => `${(r[0] / 1000).toFixed(3)},${r.slice(1, 5).join(',')},${r.slice(5).map((v) => v.toFixed(1)).join(',')}`).join('\n') + '\n' },
     { name: `${tag}/accelerometer.csv`, text: 'time_s,x,y,z,condition\n' + rec.accRows.map((r) => `${(r[0] / 1000).toFixed(3)},${r[1].toFixed(4)},${r[2].toFixed(4)},${r[3].toFixed(4)},${csvQuote(r[4])}`).join('\n') + '\n' },
     { name: `${tag}/ppg_infrared.csv`, text: 'time_s,ppg_ir,condition\n' + rec.ppgRows.map((r) => `${(r[0] / 1000).toFixed(3)},${r[1]},${csvQuote(r[2])}`).join('\n') + '\n' },
-    { name: `${tag}/blocks.csv`, text: 'condition,start_s,end_s,settle_s\n' + rec.blocks.map((b) => `${csvQuote(b.label)},${((b.t0 - rec.t0) / 1000).toFixed(3)},${b.t1 == null ? '' : ((b.t1 - rec.t0) / 1000).toFixed(3)},${b.settle ?? SETTLE_S}`).join('\n') + '\n' },
-    { name: `${tag}/README.txt`, text: 'Brain Dynamics Lab (PSYC 20N)\neeg.csv: raw EEG, microvolts, 256 Hz. bands.csv (~2 Hz): rel_* = nouscope-style relative band shares (1/f-corrected, sum to 1; delta 0 unless included; valid when rel_ready=1, ~15 s after connecting); abs_*_dB = absolute band power in dB re 1 µV² (delta 1-3 Hz, theta 4-7, alpha 8-12, beta 13-29, gamma 30-40); channels = channel mode and the electrodes actually used, e.g. weighted:TP9+TP10 (weighted = best-contact auto, locked at the first block of a recording; posterior = TP9+TP10, frontal = AF7+AF8, all, or a single electrode tp9/tp10/af7/af8).\nsignal_quality.csv: muse-lsl HSI per channel (0 good, 1 ok, 2 poor) + peak-to-peak µV, 2 Hz. accelerometer.csv: g, 52 Hz. ppg_infrared.csv: raw counts, 64 Hz. blocks.csv: start/stop of each condition (settle_s = seconds ignored at the start of each block in summaries).\nTimes are seconds since the first EEG sample.\n' },
+    { name: `${tag}/blocks.csv`, text: 'condition,start_s,end_s,settle_s,rate_stability,rate_effort,rate_meta_awareness,rate_sleepiness\n' + rec.blocks.map((b) => `${csvQuote(b.label)},${((b.t0 - rec.t0) / 1000).toFixed(3)},${b.t1 == null ? '' : ((b.t1 - rec.t0) / 1000).toFixed(3)},${b.settle ?? SETTLE_S},${b.ratings ? [b.ratings.stability, b.ratings.effort, b.ratings.meta, b.ratings.sleepy].join(',') : ',,,'}`).join('\n') + '\n' },
+    { name: `${tag}/key_presses.csv`, text: 'time_s,block\n' + rec.events.map((e) => `${((e.t - rec.t0) / 1000).toFixed(3)},${csvQuote(e.block)}`).join('\n') + '\n' },
+    { name: `${tag}/README.txt`, text: 'Brain Dynamics Lab (PSYC 20N)\neeg.csv: raw EEG, microvolts, 256 Hz. bands.csv (~2 Hz): rel_* = nouscope-style relative band shares (1/f-corrected, sum to 1; delta 0 unless included; valid when rel_ready=1, ~15 s after connecting); abs_*_dB = absolute band power in dB re 1 µV² (delta 1-3 Hz, theta 4-7, alpha 8-12, beta 13-29, gamma 30-40); channels = channel mode and the electrodes actually used, e.g. weighted:TP9+TP10 (weighted = best-contact auto, locked at the first block of a recording; posterior = TP9+TP10, frontal = AF7+AF8, all, or a single electrode tp9/tp10/af7/af8).\nsignal_quality.csv: muse-lsl HSI per channel (0 good, 1 ok, 2 poor) + peak-to-peak µV, 2 Hz. accelerometer.csv: g, 52 Hz. ppg_infrared.csv: raw counts, 64 Hz. blocks.csv: start/stop of each condition (settle_s = seconds ignored at the start of each block in summaries; rate_* = 1-5 ratings given right after a practice, blank if none). key_presses.csv: spacebar presses (my mind wandered), time and block.\nTimes are seconds since the first EEG sample.\n' },
   ]
   const a = document.createElement('a'); a.href = URL.createObjectURL(makeZip(files)); a.download = `${tag}.zip`; a.click()
   setTimeout(() => URL.revokeObjectURL(a.href), 4000)
@@ -857,14 +1148,14 @@ function frame(now) {
   if (now - lastSlow > 250) {
     lastSlow = now
     if (connected) updateQuality()
-    updateSummary(); updateCompareOptions(); updateLabOptions()
+    updateSummary(); updateCompareOptions(); updateLabOptions(); updatePracticePanel(); updateEventsOptions()
     $('panel-results').hidden = $('summary').hidden && $('compare').hidden && $('lab').hidden
     if (rec.t0 !== null && rec.rows.length) {
       const s = Math.floor(rec.rows[rec.rows.length - 1][0] / 1000)
       $('rec-time').textContent = `Recording ${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}` + (rec.current ? `  ·  ${rec.current}: ${Math.max(0, Math.floor(blockAge()))} s` : '')
     }
   }
-  drawEeg(); drawBands(); drawSpec(); drawPpg(); drawMotion(); drawCompare(); drawLab()
+  drawEeg(); drawBands(); drawSpec(); drawPpg(); drawMotion(); drawCompare(); drawLab(); drawEventsPanel()
   requestAnimationFrame(frame)
 }
 requestAnimationFrame(frame)

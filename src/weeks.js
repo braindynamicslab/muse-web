@@ -22,6 +22,16 @@ export const WEEKS = {
   },
 }
 
+WEEKS[4] = {
+  title: 'Week 4 · Meditation and the mind',
+  layers: ['bands', 'spectrogram', 'motion'],
+  channels: 'all',
+  banner: `<p><b>1. Two practices</b> (<i>Guided run → Meditation practices</i>): 1 min rest, then focused attention and open monitoring, 3 min each, in the order you choose.
+             Teammates read each script aloud, then stay silent. After each practice the participant rates it.</p>
+           <p><b>2. Mind wandering</b> (<i>Guided run → Focused attention + key presses</i>): one 4-minute block; the participant presses the spacebar whenever they <b>notice</b> their mind has wandered.</p>
+           <p><b>3. Compare</b>: the <b>Practice results</b> table (alpha at the ears, theta at the forehead, your ratings) and the <b>Mind-wandering windows</b> view (−10 s → press → +10 s, with a random-times control).</p>`,
+}
+
 export const CLAIMS = [
   { id: 'attention', name: 'Attention — “Beta = busy, active mind”',
     conditions: ['Quiet rest', 'Silent mental arithmetic'], band: 'beta', dir: 'up', channels: 'all',
@@ -48,3 +58,39 @@ export const BAND_BINS = {
   hf: [[40, 57], [63, 80]],           // 40–80 Hz with the 58–62 Hz mains band left out
 }
 export const BAND_NAMES = { delta: 'delta (1–3 Hz)', theta: 'theta (4–7 Hz)', alpha: 'alpha (8–12 Hz)', beta: 'beta (13–29 Hz)', gamma: 'gamma (30–40 Hz)', hf: 'high frequency / muscle (40–80 Hz)' }
+
+// ---------- Week 4: meditation and the mind ----------
+export const SCRIPTS = {
+  rest: { title: 'Eyes-closed rest', lines: [
+    'Close your eyes gently and sit comfortably.',
+    'For the next minute, simply rest.',
+    'Let your mind do whatever it does — you don’t need to meditate or control anything.',
+    'Stay still.' ] },
+  fa: { title: 'Focused attention', lines: [
+    'Close your eyes gently and relax, as you would when preparing to sleep.',
+    'Keep your attention alert. Don’t strain your eyes, cross them, or look upward.',
+    'Rest your inner gaze about eight to ten inches ahead, into the field of darkness in front of you.',
+    'Silently repeat any calming word.',
+    'Stay still, and watch your inner experience calmly, as though images were arising on a screen.',
+    'If you get distracted, gently return to the word and the dark space in front of you.' ] },
+  om: { title: 'Open monitoring', lines: [
+    'Close your eyes gently and settle into a comfortable, still posture.',
+    'Rest your attention in an open, relaxed way, without choosing any one thing to focus on.',
+    'Notice whatever arises as it comes: sounds, body sensations, thoughts, feelings, images.',
+    'Let each experience appear and pass, without following it, judging it, or trying to change it.',
+    'If you notice you have been carried off by a thought, just notice that, and return to open, wide awareness.',
+    'Stay alert and curious, like watching clouds cross a wide sky.' ] },
+  press: { title: 'Focused attention + key presses', lines: [
+    'Close your eyes gently and relax, as you would when preparing to sleep.',
+    'Rest your inner gaze about eight to ten inches ahead, into the field of darkness in front of you.',
+    'Silently repeat any calming word, and keep your attention on it.',
+    'When you NOTICE that your mind has wandered, press the SPACEBAR once — then gently return to the word and the dark space.',
+    'Keep one finger resting on the spacebar. Don’t worry about pressing “correctly”; just press when you notice.' ] },
+}
+
+export const RATINGS = [
+  { id: 'stability', name: 'Stability', q: 'How consistently did you maintain your intended attention?', lo: 'not at all', hi: 'very consistently' },
+  { id: 'effort', name: 'Effort', q: 'How much effort was required?', lo: 'effortless', hi: 'a great deal' },
+  { id: 'meta', name: 'Meta-awareness', q: 'How aware were you of what your mind was doing?', lo: 'not at all', hi: 'very aware' },
+  { id: 'sleepy', name: 'Sleepiness', q: 'How sleepy did you feel?', lo: 'wide awake', hi: 'about to fall asleep' },
+]

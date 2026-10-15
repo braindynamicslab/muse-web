@@ -121,3 +121,26 @@ main{grid-template-rows:clamp(400px,52vh,560px) auto;align-content:start}
 #fix-overlay{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;font-size:240px;font-weight:200;color:rgba(255,255,255,.28);pointer-events:none;z-index:15}
 button.linklike{background:none;border:0;color:var(--accent);padding:0 4px;text-decoration:underline;cursor:pointer;font-size:12px}
 #lock-note{margin-bottom:4px}
+
+/* modal: read-aloud script and ratings */
+#modal{position:fixed;inset:0;background:rgba(8,10,14,.88);z-index:40;display:flex;align-items:center;justify-content:center;padding:20px}
+#modal-card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px 28px;max-width:880px;width:100%;max-height:92vh;overflow:auto}
+#modal-card h2{font-size:22px;margin:0 0 4px}
+.modal-sub{color:var(--dim);font-size:14px;margin-bottom:12px}
+.script-line{font-size:24px;line-height:1.4;margin:10px 0}
+#modal-foot{display:flex;align-items:center;gap:16px;margin-top:16px}#modal-timer{color:var(--dim);font-size:16px;margin-right:auto}
+.rate-row{margin:12px 0}.rate-q{font-size:15px;margin-bottom:6px}.rate-q b{margin-right:6px}
+.rate-btns{display:flex;gap:8px;align-items:center}
+.rate-btns button{width:48px;height:42px;font-size:18px}
+.rate-btns button.on{background:var(--accent);color:#08121f;border-color:var(--accent);font-weight:700}
+.rate-lab{color:var(--dim);font-size:12px;min-width:110px}.rate-lab.r{text-align:left}
+#btn-press{margin-left:12px;font-size:16px;padding:8px 14px;background:#3a2d10;border-color:var(--mid)}
+#cue.flash{filter:brightness(1.9)}
+/* new full-width panels */
+#panel-practice,#panel-events{grid-column:1 / -1;grid-row:auto}
+#practice-table table{border-collapse:collapse;width:100%;font-size:14px;font-variant-numeric:tabular-nums}
+#practice-table th,#practice-table td{padding:6px 10px;border-bottom:1px solid var(--line);text-align:right}
+#practice-table th:first-child,#practice-table td:first-child{text-align:left}
+#cv-ev-avg{height:340px}#cv-ev-spec{height:240px}
+
+@media (max-width:1000px){#panel-practice{order:6}#panel-events{order:7}}
