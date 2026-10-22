@@ -40,15 +40,17 @@ export class HSI {
   onUpdate = null
   constructor() { this.reset() }
   reset() {
-    this._b = [0, 1, 2, 3].map(() => new Float32Array(BUF)); this._n = 0; this._next = FS
+    this._b = [0, 1, 2, 3].map(() => new Float32Array(BUF)); this._n = 0; this._valid = 0; this._next = FS
     this._streak = [0, 0, 0, 0]; this.levels = [2, 2, 2, 2]
   }
   push(d) {
     const i = this._n % BUF
     for (let c = 0; c < 4; c++) this._b[c][i] = Number.isNaN(d[c]) ? 0 : d[c]
-    this._n++
-    if (this._n >= this._next) { this._next = this._n + HOP; this._compute() }
+    this._n++; this._valid++
+    if (this._n >= this._next && this._valid >= FS) { this._next = this._n + HOP; this._compute() }
   }
+  /** Samples stopped for a while (reconnect): wait for a full clean window before rating contact again. */
+  markGap() { this._valid = 0; this._next = this._n + FS }
   _last(c, m) { const out = new Float64Array(m), b = this._b[c]; for (let k = 0; k < m; k++) out[k] = b[(this._n - m + k) % BUF]; return out }
   _compute() {
     for (let c = 0; c < 4; c++) {
@@ -70,7 +72,7 @@ export class HSI {
       let lp = 0; for (let k = lo; k <= hi; k++) lp += P[k]; lp /= hi - lo + 1
       const sur = []; for (let k = 30; k < 80; k++) if (k < lo || k > hi) sur.push(P[k])
       const med = median(sur); q.line = med > 0 ? lp / med : 0
-      const m = Math.min(this._n, BUF), long = this._last(c, m), rp = p2p(long)
+      const m = Math.min(this._valid, BUF), long = this._last(c, m), rp = p2p(long)
       q.drift = rp > 0 ? p2p(detrend(long)) / rp : 1
       const lev = {
         amplitude: q.p2p < TH.p2pMin || q.p2p > TH.p2pPoor ? 2 : q.p2p > TH.p2pOK ? 1 : 0,

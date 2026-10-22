@@ -11,18 +11,32 @@
   <h1>Brain Dynamics Lab <span class="course">PSYC 20N</span></h1>
   <div id="status">Not connected</div>
   <div id="battery" hidden></div>
+  <div id="mode-tabs" hidden><button data-mode="guided" class="on">Guided lab</button><button data-mode="explore">Explore EEG</button></div>
   <div class="spacer"></div>
   <button id="btn-connect" class="primary">Connect Muse</button>
   <button id="btn-sim">Practice (no headset)</button>
+  <button id="btn-reconnect" class="primary" hidden>Reconnect</button>
   <button id="btn-disconnect" hidden>Disconnect</button>
 </header>
 
-<div id="browser-warning" hidden>
-  Connecting to a Muse needs <b>Google Chrome</b> (or Edge) — Safari and Firefox can't do Bluetooth.
-  Practice mode and importing saved data work in any browser.
+<div id="sticky-top">
+<div id="recover-banner" hidden>
+  <span id="recover-text"></span>
+  <button id="btn-rec-dl" class="primary">Download it (.zip)</button>
+  <button id="btn-rec-discard">Discard</button>
 </div>
 
-<div id="fix-overlay" hidden>+</div>
+<div id="link-banner" hidden>
+  <span id="link-text"></span>
+  <button id="btn-reconnect2" class="primary" hidden>Reconnect</button>
+  <button id="btn-link-dl" hidden>Download what I have so far</button>
+</div>
+
+<div id="exp-bar">
+  <div class="exp-left"><div id="exp-title"></div><div id="exp-sub"></div></div>
+  <div id="exp-steps"></div>
+  <div id="exp-actions"></div>
+</div>
 
 <div id="cue" hidden>
   <div id="cue-main"><span id="cue-label"></span><span id="cue-plus">+</span><span id="cue-time"></span></div>
@@ -30,6 +44,14 @@
   <div id="cue-sub"></div>
   <div id="cue-bar"><i></i></div>
 </div>
+</div>
+
+<div id="browser-warning" hidden>
+  Connecting to a Muse needs <b>Google Chrome</b> (or Edge) — Safari and Firefox can't do Bluetooth.
+  Practice mode and importing saved data work in any browser.
+</div>
+
+<div id="fix-overlay" hidden>+</div>
 
 <div id="modal" hidden>
   <div id="modal-card">
@@ -39,11 +61,42 @@
   </div>
 </div>
 
+<div id="task" hidden>
+  <div id="task-top"><span id="task-title"></span><span id="task-progress"></span><button id="task-abort">Quit</button></div>
+  <div id="task-stage"></div>
+  <div id="task-foot"></div>
+</div>
+
 <div id="banner" hidden>
   <details open><summary id="banner-title"></summary><div id="banner-body"></div></details>
 </div>
 
 <main>
+  <section id="panel-behavior" class="panel" hidden>
+    <div class="panel-head"><h2>Week 5 · Attention, an intervention, and the arrow task</h2><span class="sub" id="beh-status">Ready.</span></div>
+    <div id="beh-recover" hidden><span id="beh-recover-text"></span> <button id="beh-rec-dl" class="primary">Download it (.zip)</button> <button id="beh-rec-load">Show results</button> <button id="beh-rec-discard">Discard</button></div>
+    <div id="beh-setup">
+      <ol class="beh-steps">
+        <li><b>Practice</b> the arrow task (8 trials, with feedback).</li>
+        <li><b>Baseline</b> arrow task (60 trials, about 2 min).</li>
+        <li><b>Intervention</b> for 5 minutes: focused-attention meditation, physical exercise, Stroop training, or quiet rest.</li>
+        <li><b>Arrow task again</b> (60 trials), then <b>results</b>.</li>
+      </ol>
+      <div class="rec-row">
+        <label>Participant <input id="beh-who" maxlength="12" placeholder="initials" style="width:100px"></label>
+        <label>Intervention <select id="beh-iv"><option value="">— choose —</option><option value="fa">Focused-attention meditation</option><option value="exercise">Physical exercise</option><option value="stroop">Stroop cognitive training</option><option value="rest">Quiet rest</option></select></label>
+        <label class="sub"><input type="checkbox" id="beh-beep"> beep when the 5 minutes are up (off by default)</label>
+      </div>
+      <div class="rec-row"><button id="beh-start" class="primary">▶ Start experiment</button><span class="sub">About 12 minutes. Needs no headset. Use the keyboard: arrow keys (or F / J).</span></div>
+    </div>
+    <div id="beh-results" hidden>
+      <div class="panel-head"><h2>Results</h2><div class="spacer"></div><button id="beh-card">Save results card (.png)</button><button id="beh-download" class="primary">Download data (.zip)</button></div>
+      <div id="beh-table"></div>
+      <canvas id="cv-beh"></canvas>
+      <div id="beh-note" class="sub"></div>
+    </div>
+  </section>
+
   <section id="panel-eeg" class="panel">
     <div class="panel-head">
       <h2>EEG</h2>
@@ -161,6 +214,7 @@
 
     <div class="rec-row">
       <span id="rec-time">Recording 00:00</span>
+      <span id="save-status" class="sub"></span>
       <div class="spacer"></div>
       <button id="btn-download" class="primary" disabled>Download data (.zip)</button>
     </div>

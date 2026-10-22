@@ -4,6 +4,9 @@ import { BandPipeline, HeartRate, BANDS, SPEC_BINS } from './dsp.js'
 import { HSI, LEVEL, REASON } from './quality.js'
 import { makeZip } from './zip.js'
 import { SampleClock } from './clock.js'
+import { MuseLink, BACKOFF_MS } from './link.js'
+import * as store from './store.js'
+import { createWeek5, STEPS as W5_STEPS } from './week5.js'
 import { WEEKS, CLAIMS, BAND_BINS, BAND_NAMES, SCRIPTS, RATINGS } from './weeks.js'
 import { slidingSpectra, bandSeries, motionSeries, epochsAround, meanEpoch, permutationBand, STEP_S, NF as EV_NF } from './events.js'
 import { psd, derive, alphaMetrics, bandMetrics, meanPsd, peakAbove, peakLabel, FREQS, NF, DF, REFERENCES, ELECTRODES } from './spectrum.js'
@@ -71,11 +74,11 @@ const hsi = new HSI()
 pipe.useExternalQuality = true          // channel weights come from the muse-lsl HSI, not nouscope's RMS rule
 const acc = { x: new Float32Array(ACC_N), y: new Float32Array(ACC_N), z: new Float32Array(ACC_N), n: 0 }
 const rec = { t0: null, rows: [], blocks: [], current: null, blockT0: 0, curSettle: SETTLE_S, selected: null, claim: null,
-              bandRows: [], bandHist: [], specRows: [], accRows: [], ppgRows: [], quality: [], events: [] }
+              bandRows: [], bandHist: [], specRows: [], accRows: [], ppgRows: [], quality: [], events: [], gaps: [], exportedAt: 0, sid: null }
 const spec = { cols: [] }
 let lastTs = 0, batteryPct = null
 const clock = new SampleClock(FS)
-let client = null, subs = [], connected = false, simulated = false
+let streamSubs = [], connected = false, simulated = false, hasPpg = false, pendingContinue = false, gapsSeen = 0
 
 const blockAge = () => (rec.current ? (lastTs - rec.blockT0) / 1000 : 0)
 pipe.onColumn = (col) => {
@@ -93,70 +96,213 @@ pipe.onBands = (bp, ready, abs) => {
   rec.bandRows.push({ t: lastTs - rec.t0, cond: rec.current || '', age: blockAge(), settle: rec.curSettle, vals, abs: absv, ready, ch: `${pipe.channelMode}:${CH.filter((_, c) => pipe.weights[c] > 0).join('+')}` })
 }
 
-// ---------- connection ----------
+// ---------- connection (state machine in link.js; recording state lives here and is never touched by a reconnect) ----------
+const link = new MuseLink({
+  wantPpg: () => layerState.ppg,
+  onState: (state, info) => onLinkState(state, info),
+  onStream: (c, info) => attachStream(c, info),
+})
+if (params.get('debug') === '1') { window.__link = link; window.__Sim = SimulatedMuse; window.__backoff = BACKOFF_MS }      // test hooks only: __link.client.dropLink(), .stall(ms), __Sim.failNext = n
+
+/** Student-facing dialog with several buttons; resolves with the chosen value. */
+function choose(title, body, buttons) {
+  return new Promise((resolve) => {
+    $('modal-title').textContent = title; $('modal-body').innerHTML = body; $('modal-timer').textContent = ''
+    const foot = $('modal-foot'), old = foot.querySelectorAll('.choice'); old.forEach((b) => b.remove())
+    $('modal-btn').hidden = true
+    for (const b of buttons) {
+      const el = document.createElement('button'); el.className = 'choice' + (b.primary ? ' primary' : ''); el.textContent = b.text
+      el.addEventListener('click', () => { foot.querySelectorAll('.choice').forEach((x) => x.remove()); $('modal-btn').hidden = false; $('modal').hidden = true; resolve(b.value) })
+      foot.appendChild(el)
+    }
+    $('modal').hidden = false; $('cue').hidden = true
+  })
+}
+const recMinutes = () => (rec.rows.length ? (rec.rows[rec.rows.length - 1][0] / 60000).toFixed(1) : '0')
+
 async function connect(simulate) {
+  if (link.busy) return
+  pendingContinue = false
+  if (rec.rows.length > FS * 5) {            // a recording already exists: never silently discard it
+    const canContinue = simulated === !!simulate
+    const choice = await choose('You already have a recording',
+      `<div class="modal-sub">There are <b>${recMinutes()} min</b> of ${simulated ? 'practice' : 'headset'} data in this tab${rec.exportedAt >= rec.rows.length ? ' (already downloaded)' : ' that you have <b>not downloaded</b>'}.</div>`,
+      [...(canContinue ? [{ text: '▶ Continue this recording (the gap is marked)', value: 'continue', primary: true }] : []),
+        { text: 'Download it first', value: 'download' }, { text: 'Start a new recording (clears this one)', value: 'new' }, { text: 'Cancel', value: 'cancel' }])
+    if (choice === 'cancel') return
+    if (choice === 'download') { downloadZip(); return }
+    pendingContinue = choice === 'continue'
+  }
   setStatus(simulate ? 'Starting practice mode…' : 'Choose your Muse in the Bluetooth popup…')
-  try {
-    client = simulate ? new SimulatedMuse() : new MuseClient()
-    client.enablePpg = true
-    await client.connect()
-    await client.start()
-  } catch (err) {
+  simulated = !!simulate
+  try { await link.connect(simulate) } catch (err) {
     console.error(err)
     setStatus(`Could not connect: ${err.message || err}`)
-    client = null
-    return
   }
-  simulated = simulate
+}
+function attachStream(c, info) {
+  streamSubs.forEach((s) => s.unsubscribe()); streamSubs = []        // never two sets of subscriptions
+  if (info.first && !pendingContinue) resetData()
+  else { clock.newStream(); pipe.markGap(); hsi.markGap(); eeg.hpInit = false }   // continuing: mark the discontinuity
+  pendingContinue = false
   connected = true
-  resetData()
-  rec.t0 = null
-  subs.push(zipSamples(client.eegReadings).subscribe((s) => onEegSample(s)))
-  subs.push(client.ppgReadings.subscribe((r) => {
+  hasPpg = !!c.ppgReadings
+  streamSubs.push(zipSamples(c.eegReadings).subscribe((s) => onEegSample(s)))
+  if (c.ppgReadings) streamSubs.push(c.ppgReadings.subscribe((r) => {
     if (r.ppgChannel !== 1) return
-    const arrival = Date.now(), m = r.samples.length     // arrival-based, like accelerometer (muse-js PPG timestamps share the broken counter)
+    const arrival = Date.now(), m = r.samples.length     // arrival-based (muse-js PPG timestamps share the broken counter)
     r.samples.forEach((v, i) => { hr.push(v); if (rec.t0 !== null) rec.ppgRows.push([arrival - ((m - 1 - i) * 1000) / 64 - rec.t0, v, rec.current || '']) })
   }))
-  subs.push(client.accelerometerData.subscribe((r) => {
+  streamSubs.push(c.accelerometerData.subscribe((r) => {
     const arrival = Date.now(), m = r.samples.length     // accelerometer packets carry no timestamp
     r.samples.forEach((p, i) => {
       const k = acc.n % ACC_N; acc.x[k] = p.x; acc.y[k] = p.y; acc.z[k] = p.z; acc.n++
       if (rec.t0 !== null) rec.accRows.push([arrival - ((m - 1 - i) * 1000) / ACC_FS - rec.t0, p.x, p.y, p.z, rec.current || ''])
     })
   }))
-  subs.push(client.telemetryData.subscribe((t) => { batteryPct = Math.round(t.batteryLevel); updateBattery() }))
-  subs.push(client.connectionStatus.subscribe((c) => { if (!c && connected) onDisconnected() }))
-  $('btn-connect').hidden = $('btn-sim').hidden = true
-  $('btn-disconnect').hidden = false
+  streamSubs.push(c.telemetryData.subscribe((t) => { batteryPct = Math.round(t.batteryLevel); updateBattery() }))
   $('btn-download').disabled = false
   updateCurrentUi()
-  setStatus(simulate ? 'Practice mode — simulated headset' : `Connected: ${client.deviceName || 'Muse'}`, true)
 }
-function disconnect() { try { client?.disconnect() } catch {} ; onDisconnected() }
-function onDisconnected() {
-  if (!connected) return
-  connected = false
-  subs.forEach((s) => s.unsubscribe()); subs = []
-  endBlock()
-  $('btn-connect').hidden = $('btn-sim').hidden = false
-  $('btn-disconnect').hidden = true
-  setStatus('Disconnected (your data is still here — you can download it)')
+function disconnect() {
+  link.userDisconnect(); endBlock()
 }
+let recoveredFlash = 0
+function onLinkState(state, info = {}) {
+  const idle = state === 'idle', up = state === 'streaming'
+  connected = !idle
+  $('btn-connect').hidden = $('btn-sim').hidden = !idle
+  $('btn-disconnect').hidden = idle
+  $('btn-reconnect').hidden = !(state === 'reconnecting' || state === 'lost' || state === 'stalled')
+  if (up && (info.recovered || info.recoveredFrom)) recoveredFlash = Date.now()
+  if (state === 'streaming') setStatus(link.simulate ? 'Practice mode — simulated headset' : `Connected: ${link.client?.deviceName || 'Muse'}`, true)
+  else if (state === 'connecting') setStatus('Connecting…')
+  else if (state === 'stalled') setStatus('Data stopped arriving…')
+  else if (state === 'reconnecting') setStatus('Headset disconnected — reconnecting…')
+  else if (state === 'lost') setStatus('Connection lost')
+  else if (idle) setStatus(rec.rows.length ? 'Disconnected (your data is still here — download it or press Connect to continue)' : 'Not connected')
+  updateCurrentUi(); renderLinkBanner()
+}
+function renderLinkBanner() {
+  const el = $('link-banner'), st = link.state, mins = recMinutes()
+  let cls = '', html = ''
+  if (st === 'reconnecting') {
+    cls = 'warn'; html = `<b>⚠ Headset disconnected — reconnecting…</b> attempt ${Math.max(1, link.attempt)} of ${link.maxAttempts}. Your recording so far (${mins} min) is safe. Keep the Muse on and close to the laptop.`
+  } else if (st === 'stalled') {
+    cls = 'warn'; html = `<b>⚠ No data from the headset for ${Math.round((Date.now() - link.since) / 1000) + 3} s</b> — trying to recover. Your recording so far (${mins} min) is safe.`
+  } else if (st === 'lost') {
+    cls = 'bad'; html = `<b>✖ Could not reconnect automatically.</b> Your recording (${mins} min) is safe. Turn the Muse off and on, then press <b>Reconnect</b>.`
+  } else if (st === 'streaming' && Date.now() - recoveredFlash < 7000 && rec.gaps.length) {
+    const g = rec.gaps[rec.gaps.length - 1]; cls = 'ok'; html = `<b>✔ Reconnected.</b> ${((g.end - g.start) / 1000).toFixed(1)} s of data are missing (marked in your recording).`
+  }
+  el.hidden = !html; el.className = cls
+  $('btn-reconnect2').hidden = !(st === 'reconnecting' || st === 'lost' || st === 'stalled')
+  if (html) { $('link-text').innerHTML = html; $('btn-link-dl').hidden = !(st === 'lost' || st === 'reconnecting') || !rec.rows.length }
+}
+$('btn-reconnect').addEventListener('click', async () => {
+  $('btn-reconnect').disabled = true; setStatus('Reconnecting…')
+  const r = await link.reconnect(); $('btn-reconnect').disabled = false
+  if (!r.ok) setStatus(`Could not reconnect: ${r.error}`)
+})
+$('btn-link-dl').addEventListener('click', () => downloadZip())
+$('btn-reconnect2').addEventListener('click', () => $('btn-reconnect').click())
+setInterval(renderLinkBanner, 500)
+window.addEventListener('pagehide', () => link.shutdown())           // free the headset so a refreshed page can connect at once
+window.addEventListener('beforeunload', (e) => { const w5 = week5 && (week5.state.running || (week5.hasData() && !week5.state.exported)); if ((rec.rows.length > FS * 10 && rec.exportedAt < rec.rows.length) || w5) { e.preventDefault(); e.returnValue = '' } })
+
 function setStatus(msg, on = false) { const el = $('status'); el.textContent = msg; el.classList.toggle('on', on) }
 function resetData() {
   eeg.n = 0; eeg.hpInit = false; eeg.disp.forEach((x) => x.fill(0)); eeg.t.fill(0)
   pipe.reset(); hr.reset()
-  spec.cols = []; hsi.reset(); clock.reset(); acc.n = 0; batteryPct = null
-  rec.rows = []; rec.blocks = []; rec.current = null; rec.bandRows = []; rec.bandHist = []; rec.specRows = []; rec.accRows = []; rec.ppgRows = []; rec.quality = []; rec.events = []
+  spec.cols = []; hsi.reset(); clock.reset(); acc.n = 0; batteryPct = null; gapsSeen = 0
+  rec.t0 = null; rec.exportedAt = 0; rec.sid = null; ck.eeg = ck.acc = ck.ppg = ck.seq = 0; ck.labels = []
+  rec.rows = []; rec.blocks = []; rec.current = null; rec.bandRows = []; rec.bandHist = []; rec.specRows = []; rec.accRows = []; rec.ppgRows = []; rec.quality = []; rec.events = []; rec.gaps = []
   updateCurrentUi(); updateBattery()
 }
+
+// ---------- local checkpoints (IndexedDB) and recovery ----------
+const ck = { eeg: 0, acc: 0, ppg: 0, seq: 0, labels: [], busy: false, ok: true }
+const labelIdx = (l) => { if (!l) return -1; let i = ck.labels.indexOf(l); if (i < 0) { ck.labels.push(l); i = ck.labels.length - 1 } return i }
+function startSessionStore() {
+  rec.sid = Date.now().toString(36) + Math.random().toString(36).slice(2, 6)
+  store.startSession({ id: rec.sid, startedAt: Date.now(), simulated }).catch((e) => { ck.ok = false; showSaveStatus() })
+  store.prune().catch(() => {})
+}
+function showSaveStatus(t) {
+  const el = $('save-status'); if (!el) return
+  el.textContent = ck.ok ? (t ? `Auto-saved on this computer at ${new Date(t).toLocaleTimeString()}` : '') : 'Auto-save is unavailable in this browser window — download your data often'
+}
+function snapshotState() {
+  return { labels: ck.labels, blocks: rec.blocks.map((b) => ({ ...b })), events: rec.events, gaps: rec.gaps, participant: $('participant').value, claim: rec.claim,
+    t0: rec.t0, simulated, link: link.log.slice(-300), diag: link.diagnostics(), savedAt: Date.now() }
+}
+async function doCheckpoint() {
+  if (!ck.ok || ck.busy || !rec.sid || rec.rows.length === 0) return
+  const nE = rec.rows.length, nA = rec.accRows.length, nP = rec.ppgRows.length
+  if (nE === ck.eeg && nA === ck.acc && nP === ck.ppg && !rec.blocks.some((b) => b.t1 == null) ) { /* nothing new, still refresh state below */ }
+  ck.busy = true
+  try {
+    const chunks = []
+    const mk = (kind, rows, from, w) => {
+      const n = rows.length - from; if (n <= 0) return
+      const t = new Float64Array(n), v = new Float32Array(n * w), cond = new Int16Array(n)
+      for (let i = 0; i < n; i++) { const r = rows[from + i]; t[i] = r[0]; for (let j = 0; j < w; j++) v[i * w + j] = r[1 + j]; cond[i] = labelIdx(r[1 + w]) }
+      chunks.push({ kind, seq: ck.seq++, n, t, v, cond, w })
+    }
+    mk('eeg', rec.rows, ck.eeg, 4); mk('acc', rec.accRows, ck.acc, 3); mk('ppg', rec.ppgRows, ck.ppg, 1)
+    await store.checkpoint(rec.sid, chunks, snapshotState(), nE)
+    ck.eeg = nE; ck.acc = nA; ck.ppg = nP; showSaveStatus(Date.now())
+  } catch (e) { ck.ok = false; showSaveStatus(); console.warn('checkpoint failed', e) } finally { ck.busy = false }
+}
+setInterval(doCheckpoint, 5000)
+window.addEventListener('pagehide', () => { doCheckpoint() })
+document.addEventListener('visibilitychange', () => { if (document.hidden) doCheckpoint() })
+
+const csvq = (s) => (/[",\n]/.test(String(s)) ? `"${String(s).replace(/"/g, '""')}"` : String(s))
+async function downloadRecovered(sid) {
+  const { meta, state, chunks } = await store.loadSession(sid)
+  const labels = state.labels || [], lab = (i) => (i >= 0 ? csvq(labels[i] ?? '') : '')
+  const csv = (kind, header, fmt) => { const out = [header]; for (const c of chunks) if (c.kind === kind) for (let i = 0; i < c.n; i++) out.push(fmt(c, i)); return out.join('\n') + '\n' }
+  const t0 = state.t0 ?? 0
+  const files = [
+    { name: 'eeg.csv', text: csv('eeg', 'time_s,TP9,AF7,AF8,TP10,condition', (c, i) => `${(c.t[i] / 1000).toFixed(4)},${[0, 1, 2, 3].map((j) => c.v[i * 4 + j].toFixed(2)).join(',')},${lab(c.cond[i])}`) },
+    { name: 'accelerometer.csv', text: csv('acc', 'time_s,x,y,z,condition', (c, i) => `${(c.t[i] / 1000).toFixed(3)},${[0, 1, 2].map((j) => c.v[i * 3 + j].toFixed(4)).join(',')},${lab(c.cond[i])}`) },
+    { name: 'ppg_infrared.csv', text: csv('ppg', 'time_s,ppg_ir,condition', (c, i) => `${(c.t[i] / 1000).toFixed(3)},${c.v[i]},${lab(c.cond[i])}`) },
+    { name: 'blocks.csv', text: 'condition,start_s,end_s,settle_s,rate_stability,rate_effort,rate_meta_awareness,rate_sleepiness\n' + (state.blocks || []).map((b) => `${csvq(b.label)},${((b.t0 - t0) / 1000).toFixed(3)},${b.t1 == null ? '' : ((b.t1 - t0) / 1000).toFixed(3)},${b.settle ?? SETTLE_S},${b.ratings ? [b.ratings.stability, b.ratings.effort, b.ratings.meta, b.ratings.sleepy].join(',') : ',,,'}`).join('\n') + '\n' },
+    { name: 'key_presses.csv', text: 'time_s,block\n' + (state.events || []).map((e) => `${((e.t - t0) / 1000).toFixed(3)},${csvq(e.block)}`).join('\n') + '\n' },
+    { name: 'gaps.csv', text: 'start_s,end_s,duration_s,kind,lost_packets\n' + (state.gaps || []).map((g) => `${(g.start / 1000).toFixed(3)},${(g.end / 1000).toFixed(3)},${((g.end - g.start) / 1000).toFixed(3)},${g.kind},${g.packets}`).join('\n') + '\n' },
+    { name: 'connection_log.csv', text: 'time_iso,time_s,state,event,detail\n' + (state.link || []).map((e) => { const { t, state: st, msg, ...rest } = e; return `${new Date(t).toISOString()},${((t - t0) / 1000).toFixed(3)},${st},${csvq(msg)},${csvq(JSON.stringify(rest))}` }).join('\n') + '\n' },
+    { name: 'diagnostics.txt', text: Object.entries({ ...(state.diag || {}), recovered: true, recordingStarted: new Date(meta.startedAt).toISOString(), lastCheckpoint: new Date(meta.updatedAt).toISOString(), rows: meta.rows }).map(([k, v]) => `${k}: ${v}`).join('\n') + '\n' },
+    { name: 'README.txt', text: 'Brain Dynamics Lab (PSYC 20N) — RECOVERED recording (the page was closed or crashed before you downloaded it).\nThis is the raw data saved by the automatic checkpoints (about every 5 s), so the last few seconds may be missing.\neeg.csv: raw EEG, microvolts, 256 Hz. accelerometer.csv: g. ppg_infrared.csv: raw counts. blocks.csv: start/stop of each condition and any ratings. key_presses.csv, gaps.csv, connection_log.csv, diagnostics.txt as in a normal download.\nbands.csv and signal_quality.csv are not included (they are computed live); they can be recomputed from eeg.csv.\nTimes are seconds since the first EEG sample.\n' },
+  ]
+  const who = (state.participant || '').trim().replace(/[^\w-]+/g, ''), stamp = new Date(meta.startedAt).toISOString().replace(/[:.]/g, '-').slice(0, 19)
+  const tag = `muse-recovered-${who ? who + '-' : ''}${meta.simulated ? 'practice-' : ''}${stamp}`
+  const a = document.createElement('a'); a.href = URL.createObjectURL(makeZip(files.map((f) => ({ ...f, name: `${tag}/${f.name}` })))); a.download = `${tag}.zip`; a.click()
+  setTimeout(() => URL.revokeObjectURL(a.href), 4000)
+  await store.markExported(sid, meta.rows)
+}
+async function recoveryCheck() {
+  try {
+    const all = await store.listSessions()
+    const cand = all.find((x) => x.rows - (x.exportedRows || 0) > FS * 10)
+    if (!cand) return
+    const when = new Date(cand.startedAt).toLocaleString(), mins = (cand.rows / FS / 60).toFixed(1)
+    $('recover-text').innerHTML = `<b>Found an unfinished recording from this computer</b> (${when}, about ${mins} min${cand.simulated ? ', practice data' : ''}) that was never downloaded.`
+    $('recover-banner').hidden = false
+    $('btn-rec-dl').onclick = async () => { await downloadRecovered(cand.id); $('recover-banner').hidden = true }
+    $('btn-rec-discard').onclick = async () => { if (confirm('Delete this saved recording from this computer? This cannot be undone.')) { await store.deleteSession(cand.id); $('recover-banner').hidden = true; recoveryCheck() } }
+  } catch { /* storage unavailable */ }
+}
+recoveryCheck()
 
 // ---------- EEG ingest ----------
 const hpA = 1 / (1 + 2 * Math.PI * HP_FC / FS)
 function onEegSample(s) {
   const d = s.data
   const ts = clock.stamp(s.index)      // our own clock — muse-js timestamps are unreliable (see clock.js)
-  if (rec.t0 === null) rec.t0 = ts
+  link.touch()                          // heartbeat for the stall watchdog
+  if (rec.t0 === null) { rec.t0 = ts; startSessionStore() }
+  while (gapsSeen < clock.gaps.length) { const g = clock.gaps[gapsSeen++]; rec.gaps.push({ start: g.start - rec.t0, end: g.end - rec.t0, kind: g.kind, packets: g.packets || 0 }) }
   lastTs = ts
   const i = eeg.n % N
   eeg.t[i] = ts
@@ -231,6 +377,16 @@ function fit(cv) {
   const g = cv.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0)
   return [g, cv.clientWidth, cv.clientHeight]
 }
+/** Missing-data intervals (connection drops, lost packets): a shaded red band labelled "no data". */
+function drawGaps(g, xOf, xMin, xMax, hgt) {
+  for (const gp of rec.gaps) {
+    if (rec.t0 === null) break
+    const x0 = Math.max(xMin, xOf(rec.t0 + gp.start)), x1 = Math.min(xMax, xOf(rec.t0 + gp.end))
+    if (x1 < xMin || x0 > xMax || x1 - x0 < 0.5) continue
+    g.fillStyle = 'rgba(239,91,91,0.16)'; g.fillRect(x0, 0, Math.max(2, x1 - x0), hgt)
+    if (x1 - x0 > 40) { g.fillStyle = '#ef9a9a'; g.font = '11px sans-serif'; g.fillText(`no data ${((gp.end - gp.start) / 1000).toFixed(1)} s`, x0 + 4, 14) }
+  }
+}
 /** Key presses ("my mind wandered"): a red tick with a small triangle at the top. */
 function drawPresses(g, xOf, xMin, xMax, hgt) {
   for (const ev of rec.events) {
@@ -266,6 +422,7 @@ function drawEeg() {
   }
   if (!eeg.n) { g.fillStyle = '#8b95a8'; g.fillText('Connect a Muse (or start Practice mode) to see your EEG.', 80, h / 2); return }
   drawBlocks(g, xOf, 0, w, h, h - 6)
+  drawGaps(g, xOf, 0, w, h)
   drawPresses(g, xOf, 0, w, h)
   const count = Math.min(eeg.n, N - 1)
   for (let c = 0; c < 4; c++) {
@@ -277,7 +434,8 @@ function drawEeg() {
       if (x < 0) continue
       const v = Math.max(-1, Math.min(1, eeg.disp[c][i] / scale))
       const y = mid - v * lane * 0.48
-      if (k === eeg.n - count || x < 0.5) g.moveTo(x, y); else g.lineTo(x, y)
+      const brk = k === eeg.n - count || x < 0.5 || eeg.t[i] - eeg.t[(k - 1 + N) % N] > 100      // > 100 ms between samples = a gap
+      if (brk) g.moveTo(x, y); else g.lineTo(x, y)
     }
     g.stroke()
   }
@@ -364,6 +522,7 @@ function drawBands() {
   const tR = hist[hist.length - 1].t
   const xOf = (t) => 30 + (w - 30) * (1 - (tR - t) / BAND_WIN_MS)
   drawBlocks(g, xOf, 30, w, h - 14, 12)
+  drawGaps(g, xOf, 30, w, h - 14)
   drawPresses(g, xOf, 30, w, h - 14)
   BANDS.forEach((b, bi) => {
     if (b === 'delta' && !withDelta) return
@@ -384,6 +543,7 @@ function drawPpg() {
   const [g, w, h] = fit($('cv-ppg'))
   g.clearRect(0, 0, w, h)
   $('bpm').textContent = hr.bpm ? `${hr.bpm} bpm` : '– bpm'
+  if (connected && !hasPpg) { g.fillStyle = '#8b95a8'; g.font = '13px sans-serif'; g.fillText('The pulse stream is off (it adds Bluetooth load). Turn on the Pulse layer, then Disconnect and Connect again.', 10, h / 2); return }
   const d = hr.display, cnt = d.length; if (cnt < 2) return
   let sd = 0; for (const v of d) sd += v * v; sd = Math.sqrt(sd / cnt) || 1
   g.strokeStyle = '#ef5b5b'; g.beginPath()
@@ -430,7 +590,7 @@ function renderConditionButtons() {
 }
 const nowMs = () => (eeg.n ? eeg.t[(eeg.n - 1) % N] : 0)
 function startBlock(settle = SETTLE_S) {
-  if (!connected || rec.current || !rec.selected) return
+  if (!connected || link.state !== 'streaming' || rec.current || !rec.selected) return
   if (!pipe.lockedWeights) pipe.lockWeights()     // same channels for every block of this recording
   rec.current = rec.selected; rec.blockT0 = nowMs(); rec.curSettle = settle
   rec.blocks.push({ label: rec.current, t0: rec.blockT0, t1: null, settle })
@@ -445,14 +605,14 @@ function updateCurrentUi() {
   const running = rec.current !== null
   $('current').textContent = running ? `● ${rec.current}` : rec.selected ? `Selected: ${rec.selected}` : 'Pick a condition'
   $('current').style.color = running ? 'var(--bad)' : ''
-  $('btn-start').disabled = !connected || running || !rec.selected || seq.active
+  $('btn-start').disabled = link.state !== 'streaming' || running || !rec.selected || seq.active
   $('btn-stop').disabled = !running || seq.active
   document.querySelectorAll('#markers button').forEach((b) => {
     b.classList.toggle('sel', b.textContent === (running ? rec.current : rec.selected))
     b.disabled = running || seq.active
   })
   $('btn-custom').disabled = $('custom-label').disabled = running || seq.active
-  $('btn-seq').disabled = !connected || seq.active
+  $('btn-seq').disabled = link.state !== 'streaming' || seq.active
   $('btn-seq-stop').disabled = !seq.active
 }
 function addCustom() {
@@ -609,7 +769,7 @@ function showCue(cls, label, time, sub, frac, opts = {}) {
   $('cue-bar').firstElementChild.style.width = `${Math.round(Math.max(0, Math.min(1, frac)) * 100)}%`
 }
 function startSeq() {
-  if (!connected || seq.active) return
+  if (!connected || link.state !== 'streaming' || seq.active) return
   const steps = buildSteps()
   if (!steps.length) { $('seq-warn').textContent = 'Pick two different conditions for A and B first.'; return }
   const badEars = [0, 3].filter((c) => hsi.levels[c] === 2).map((c) => CH[c])
@@ -655,7 +815,7 @@ function nextStep() {
 }
 function seqTick() {
   if (!seq.active) return
-  if (!connected) { stopSeq('Guided run stopped — disconnected'); return }
+  if (link.state === 'idle') { stopSeq('Guided run stopped — disconnected'); return }
   const t = nowMs()
   if (seq.phase === 'pre') {
     const left = 5000 - (t - seq.tPhase)
@@ -807,12 +967,20 @@ function drawCompare() {
 const lab = { key: '', res: null, eMode: '' }
 const lowerBound = (tRel) => { let lo = 0, hi = rec.rows.length; while (lo < hi) { const m = (lo + hi) >> 1; if (rec.rows[m][0] < tRel) lo = m + 1; else hi = m } return lo }
 const usableBlocks = (cond) => rec.blocks.filter((b) => b.label === cond && b.t1 != null && (b.t1 - b.t0) / 1000 - (b.settle ?? SETTLE_S) >= 4.2)
+/** Split the sample range [i0, i1) wherever consecutive samples are > 50 ms apart (a connection gap). */
+function splitAtGaps(i0, i1) {
+  const out = []; let a = i0
+  for (let i = i0 + 1; i < i1; i++) if (rec.rows[i][0] - rec.rows[i - 1][0] > 50) { out.push([a, i]); a = i }
+  out.push([a, i1]); return out
+}
 function labSegments(cond) {
   const segs = []
   for (const b of usableBlocks(cond)) {
     const i0 = lowerBound(b.t0 - rec.t0 + (b.settle ?? SETTLE_S) * 1000), i1 = lowerBound(b.t1 - rec.t0)
-    if (i1 - i0 < 1024) continue
-    segs.push([0, 1, 2, 3].map((c) => { const a = new Float64Array(i1 - i0); for (let i = i0; i < i1; i++) a[i - i0] = rec.rows[i][1 + c]; return a }))
+    for (const [a, z] of splitAtGaps(i0, i1)) {        // windows never straddle a gap
+      if (z - a < 1024) continue
+      segs.push([0, 1, 2, 3].map((c) => { const arr = new Float64Array(z - a); for (let i = a; i < z; i++) arr[i - a] = rec.rows[i][1 + c]; return arr }))
+    }
   }
   return segs
 }
@@ -1033,12 +1201,16 @@ function computeEvents() {
   const signals = chIdx.map((c) => { const a = new Float64Array(i1 - i0); for (let i = i0; i < i1; i++) a[i - i0] = rec.rows[i][1 + c]; return a })
   const sp = slidingSpectra(signals)
   const start = rec.rows[i0][0], end = rec.rows[i1 - 1][0]
-  const all = rec.events.filter((e) => e.block === label && e.t >= b.t0 && e.t <= b.t1).map((e) => (e.t - rec.t0 - start) / 1000)
+  const gapsIn = rec.gaps.filter((g) => g.end > start && g.start < end).map((g) => ({ s: (g.start - start) / 1000, e: (g.end - start) / 1000 }))
+  const shift = (t) => t - gapsIn.reduce((a, g) => a + (g.e < t ? g.e - g.s : 0), 0)          // samples are contiguous across a gap
+  const wall = rec.events.filter((e) => e.block === label && e.t >= b.t0 && e.t <= b.t1).map((e) => (e.t - rec.t0 - start) / 1000)
+  const nearGap = wall.filter((p) => gapsIn.some((g) => g.e > p - 10 && g.s < p + 10))
+  const all = wall.filter((p) => !nearGap.includes(p)).map(shift)
   const bands = { theta: [4, 8], alpha: [8, 13], beta: [13, 30] }
   const series = {}
   for (const [k, [lo, hi]] of Object.entries(bands)) series[k] = { s: bandSeries(sp, lo, hi), norm: true }
   series.motion = { s: motionSeries(rec.accRows, start, end, sp.tc), norm: false }
-  const res = { label, chSel, total: all.length, series: {}, used: [], skipped: [], nw: sp.nw }
+  const res = { label, chSel, total: wall.length, nearGap: nearGap.length, hasGaps: gapsIn.length > 0, series: {}, used: [], skipped: [], nw: sp.nw }
   for (const [k, { s, norm }] of Object.entries(series)) {
     const ep = epochsAround(s, sp.tc, all, 10, 10, norm)
     if (!ep.epochs.length) continue
@@ -1073,7 +1245,7 @@ function drawEventsPanel() {
   if (!R) { $('ev-summary').textContent = ''; return }
   if (R.tooShort) { $('ev-summary').textContent = 'This block is too short for a ±10 s analysis.'; return }
   if (!R.used.length) { $('ev-summary').textContent = `${R.total} key press(es) in this block, but none has a full ±10 s window of data around it (presses in the first or last 10 s are skipped). Try a longer block.`; return }
-  $('ev-summary').textContent = `${R.used.length} of ${R.total} presses used` + (R.skipped.length ? ` (${R.skipped.length} too close to the start or end of the block)` : '') + `. Grey = each press; colour = their average; shaded = what random times give (95% range).`
+  $('ev-summary').textContent = `${R.used.length} of ${R.total} presses used` + (R.skipped.length ? ` (${R.skipped.length} too close to the start or end of the block)` : '') + (R.nearGap ? ` (${R.nearGap} within 10 s of a connection gap)` : '') + (R.hasGaps ? ' This block contains a connection gap; head-movement timing after it is approximate.' : '') + ` Grey = each press; colour = their average; shaded = what random times give (95% range).`
   const keys = ['theta', 'alpha', 'beta', 'motion'], titles = { theta: 'theta 4–8 Hz (change, dB)', alpha: 'alpha 8–13 Hz (change, dB)', beta: 'beta 13–30 Hz (change, dB)', motion: 'head movement (accelerometer, g)' }
   const cw = w / 2, chh = h / 2, L = 38, pad = 18
   keys.forEach((k, qi) => {
@@ -1120,9 +1292,14 @@ function downloadZip() {
     { name: `${tag}/accelerometer.csv`, text: 'time_s,x,y,z,condition\n' + rec.accRows.map((r) => `${(r[0] / 1000).toFixed(3)},${r[1].toFixed(4)},${r[2].toFixed(4)},${r[3].toFixed(4)},${csvQuote(r[4])}`).join('\n') + '\n' },
     { name: `${tag}/ppg_infrared.csv`, text: 'time_s,ppg_ir,condition\n' + rec.ppgRows.map((r) => `${(r[0] / 1000).toFixed(3)},${r[1]},${csvQuote(r[2])}`).join('\n') + '\n' },
     { name: `${tag}/blocks.csv`, text: 'condition,start_s,end_s,settle_s,rate_stability,rate_effort,rate_meta_awareness,rate_sleepiness\n' + rec.blocks.map((b) => `${csvQuote(b.label)},${((b.t0 - rec.t0) / 1000).toFixed(3)},${b.t1 == null ? '' : ((b.t1 - rec.t0) / 1000).toFixed(3)},${b.settle ?? SETTLE_S},${b.ratings ? [b.ratings.stability, b.ratings.effort, b.ratings.meta, b.ratings.sleepy].join(',') : ',,,'}`).join('\n') + '\n' },
+    { name: `${tag}/gaps.csv`, text: 'start_s,end_s,duration_s,kind,lost_packets\n' + rec.gaps.map((g) => `${(g.start / 1000).toFixed(3)},${(g.end / 1000).toFixed(3)},${((g.end - g.start) / 1000).toFixed(3)},${g.kind},${g.packets}`).join('\n') + '\n' },
+    { name: `${tag}/connection_log.csv`, text: 'time_iso,time_s,state,event,detail\n' + link.log.map((e) => { const { t, state, msg, ...rest } = e; return `${new Date(t).toISOString()},${rec.t0 === null ? '' : ((t - rec.t0) / 1000).toFixed(3)},${state},${csvQuote(msg)},${csvQuote(JSON.stringify(rest))}` }).join('\n') + '\n' },
+    { name: `${tag}/diagnostics.txt`, text: Object.entries({ ...link.diagnostics(), exported: new Date().toISOString(), recordingMinutes: recMinutes(), gaps: rec.gaps.length, missingSeconds: (rec.gaps.reduce((a, g) => a + (g.end - g.start), 0) / 1000).toFixed(1), lostPackets: clock.lostPackets }).map(([k, v]) => `${k}: ${v}`).join('\n') + '\n' },
     { name: `${tag}/key_presses.csv`, text: 'time_s,block\n' + rec.events.map((e) => `${((e.t - rec.t0) / 1000).toFixed(3)},${csvQuote(e.block)}`).join('\n') + '\n' },
-    { name: `${tag}/README.txt`, text: 'Brain Dynamics Lab (PSYC 20N)\neeg.csv: raw EEG, microvolts, 256 Hz. bands.csv (~2 Hz): rel_* = nouscope-style relative band shares (1/f-corrected, sum to 1; delta 0 unless included; valid when rel_ready=1, ~15 s after connecting); abs_*_dB = absolute band power in dB re 1 µV² (delta 1-3 Hz, theta 4-7, alpha 8-12, beta 13-29, gamma 30-40); channels = channel mode and the electrodes actually used, e.g. weighted:TP9+TP10 (weighted = best-contact auto, locked at the first block of a recording; posterior = TP9+TP10, frontal = AF7+AF8, all, or a single electrode tp9/tp10/af7/af8).\nsignal_quality.csv: muse-lsl HSI per channel (0 good, 1 ok, 2 poor) + peak-to-peak µV, 2 Hz. accelerometer.csv: g, 52 Hz. ppg_infrared.csv: raw counts, 64 Hz. blocks.csv: start/stop of each condition (settle_s = seconds ignored at the start of each block in summaries; rate_* = 1-5 ratings given right after a practice, blank if none). key_presses.csv: spacebar presses (my mind wandered), time and block.\nTimes are seconds since the first EEG sample.\n' },
+    { name: `${tag}/README.txt`, text: 'Brain Dynamics Lab (PSYC 20N)\neeg.csv: raw EEG, microvolts, 256 Hz. bands.csv (~2 Hz): rel_* = nouscope-style relative band shares (1/f-corrected, sum to 1; delta 0 unless included; valid when rel_ready=1, ~15 s after connecting); abs_*_dB = absolute band power in dB re 1 µV² (delta 1-3 Hz, theta 4-7, alpha 8-12, beta 13-29, gamma 30-40); channels = channel mode and the electrodes actually used, e.g. weighted:TP9+TP10 (weighted = best-contact auto, locked at the first block of a recording; posterior = TP9+TP10, frontal = AF7+AF8, all, or a single electrode tp9/tp10/af7/af8).\nsignal_quality.csv: muse-lsl HSI per channel (0 good, 1 ok, 2 poor) + peak-to-peak µV, 2 Hz. accelerometer.csv: g, 52 Hz. ppg_infrared.csv: raw counts, 64 Hz. blocks.csv: start/stop of each condition (settle_s = seconds ignored at the start of each block in summaries; rate_* = 1-5 ratings given right after a practice, blank if none). key_presses.csv: spacebar presses (my mind wandered), time and block. gaps.csv: intervals with no EEG (connection drops or lost packets) — time in eeg.csv stays aligned to the wall clock, so rows jump across a gap. connection_log.csv / diagnostics.txt: connection events and environment, for troubleshooting.\nTimes are seconds since the first EEG sample.\n' },
   ]
+  rec.exportedAt = rec.rows.length
+  if (rec.sid) store.markExported(rec.sid, rec.rows.length).catch(() => {})
   const a = document.createElement('a'); a.href = URL.createObjectURL(makeZip(files)); a.download = `${tag}.zip`; a.click()
   setTimeout(() => URL.revokeObjectURL(a.href), 4000)
 }
@@ -1137,6 +1314,86 @@ $('chk-delta').addEventListener('change', (e) => {
 
 initClaims()
 renderConditionButtons()
+
+// ---------- experiment bar (always visible at the top) + Guided / Explore modes + Week 5 ----------
+const isBeh = !!weekCfg?.behavioral
+let mode = isBeh ? 'guided' : 'eeg'
+let week5 = null
+const expState = { sig: '', primary: null, secondary: null }
+function setMode(m) {
+  mode = m
+  document.body.classList.toggle('mode-guided', m === 'guided'); document.body.classList.toggle('mode-explore', m === 'explore')
+  document.querySelectorAll('#mode-tabs button').forEach((b) => b.classList.toggle('on', b.dataset.mode === m))
+  if (m === 'guided') setTimeout(() => week5?.drawChart(), 60)
+  updateExpBar(true)
+}
+function startBeh() {
+  const who = $('beh-who').value.trim(), iv = $('beh-iv').value
+  if (!who || !iv) { $('beh-status').textContent = 'Enter the participant’s initials and choose an intervention first.'; (who ? $('beh-iv') : $('beh-who')).focus(); return }
+  week5.start({ participant: who, intervention: iv, beep: $('beh-beep').checked })
+}
+if (isBeh) {
+  week5 = createWeek5({ $, choose, setBusy: () => {} })
+  document.body.classList.add('beh'); $('mode-tabs').hidden = false; $('panel-behavior').hidden = false
+  document.querySelectorAll('#mode-tabs button').forEach((b) => b.addEventListener('click', () => setMode(b.dataset.mode)))
+  $('beh-start').addEventListener('click', startBeh)
+  $('beh-download').addEventListener('click', () => week5.download())
+  $('beh-card').addEventListener('click', () => week5.card())
+  $('task-abort').addEventListener('click', () => week5.abort())
+  document.addEventListener('week5-change', () => updateExpBar(true))
+  const old = week5.recover()
+  if (old) {
+    $('beh-recover').hidden = false
+    $('beh-recover-text').innerHTML = `<b>Found unsaved Week 5 data</b> from this computer (${new Date(old.savedAt).toLocaleString()}, ${old.participant || 'no initials'}).`
+    $('beh-rec-dl').onclick = () => { week5.adopt(old); week5.download(); $('beh-recover').hidden = true }
+    $('beh-rec-load').onclick = () => { week5.adopt(old); $('beh-recover').hidden = true }
+    $('beh-rec-discard').onclick = () => { if (confirm('Delete this saved experiment data from this computer? This cannot be undone.')) { week5.clearStored(); $('beh-recover').hidden = true } }
+  }
+  setMode('guided'); week5.render()
+}
+function expContext() {
+  if (isBeh && mode === 'guided') {
+    const s = week5.state, has = week5.hasData()
+    return {
+      title: weekCfg.title, steps: W5_STEPS, done: s.done, cur: s.done ? 4 : s.running || s.startedAt ? s.stepIndex : 0,
+      sub: s.running ? 'Running — follow the instructions on screen.' : s.done ? 'Complete — save your results.' : s.aborted ? 'Stopped early — you can still download the partial data.' : 'Enter initials, choose an intervention, then start.',
+      primary: s.running ? { text: 'Quit', act: () => week5.abort() } : has ? { text: '⬇ Download data (.zip)', act: () => week5.download() } : { text: '▶ Start experiment', act: startBeh },
+      secondary: !s.running && has ? { text: '▶ Run again', act: startBeh } : null,
+    }
+  }
+  const st = link.state, blocksDone = rec.blocks.some((b) => b.t1 != null), recording = seq.active || rec.current !== null
+  const poorEars = [0, 3].filter((c) => hsi.levels[c] === 2).map((c) => CH[c]), earsOk = !poorEars.length
+  const ready = st === 'streaming' && earsOk
+  let cur = 0
+  if (recording) cur = 1
+  else if (blocksDone) cur = rec.rows.length && rec.exportedAt >= rec.rows.length ? 3 : 2
+  else if (ready) cur = 1
+  let sub, primary
+  if (st === 'idle') { sub = rec.rows.length ? 'Disconnected — your recording is still here.' : 'Connect your Muse (or use Practice) to begin.'; primary = { text: 'Connect Muse', act: () => connect(false) } }
+  else if (st === 'connecting') { sub = 'Connecting…'; primary = { text: 'Connecting…', disabled: true } }
+  else if (st === 'reconnecting' || st === 'lost' || st === 'stalled') { sub = 'Connection problem — your recording is safe.'; primary = { text: 'Reconnect', act: () => $('btn-reconnect').click() } }
+  else if (seq.active) { sub = 'Guided run in progress — follow the cue.'; primary = { text: '■ Stop run', act: () => stopSeq('Guided run stopped') } }
+  else if (rec.current !== null) { sub = `Recording: ${rec.current}`; primary = { text: '■ Stop block', act: endBlock } }
+  else {
+    sub = !earsOk ? `${poorEars.join(' and ')} contact is poor — adjust the headband before starting.` : blocksDone ? 'Compare your conditions below, then download your data.' : 'Contacts look good — start when ready.'
+    primary = { text: `▶ Start: ${$('seq-select').selectedOptions[0].text.split(':')[0]}`, act: startSeq }
+  }
+  return { title: weekCfg ? weekCfg.title : 'Free recording', steps: ['Prepare', 'Record', 'Compare', 'Export'], cur, done: false, sub, primary,
+    secondary: rec.rows.length && st !== 'connecting' ? { text: '⬇ Download data', act: () => downloadZip() } : null }
+}
+function updateExpBar(force) {
+  const c = expContext()
+  const sig = JSON.stringify([c.title, c.sub, c.cur, c.done, c.steps, c.primary?.text, c.primary?.disabled, c.secondary?.text])
+  if (!force && sig === expState.sig) return
+  expState.sig = sig; expState.primary = c.primary; expState.secondary = c.secondary
+  $('exp-title').textContent = c.title; $('exp-sub').textContent = c.sub
+  $('exp-steps').innerHTML = c.steps.map((st, i) => `<span class="step ${c.done || i < c.cur ? 'done' : i === c.cur ? 'cur' : ''}">${i + 1} ${st}</span>`).join('')
+  $('exp-actions').innerHTML = (c.secondary ? `<button data-act="secondary">${c.secondary.text}</button>` : '') + (c.primary ? `<button class="primary" data-act="primary"${c.primary.disabled ? ' disabled' : ''}>${c.primary.text}</button>` : '')
+}
+$('exp-actions').addEventListener('click', (e) => { const b = e.target.closest('[data-act]'); if (b) (b.dataset.act === 'primary' ? expState.primary : expState.secondary)?.act?.() })
+$('seq-select').addEventListener('change', () => updateExpBar(true))
+setInterval(() => updateExpBar(false), 400)
+updateExpBar(true)
 
 // ---------- buttons / loop ----------
 $('btn-connect').addEventListener('click', () => connect(false))

@@ -17,6 +17,11 @@ No headset? Click **Practice** for a simulated Muse.
 - URL flag `?layers=bands,spectrogram,ppg,motion` fixes which layers are shown (instructors can control a week's view);
   `?sim=auto` starts Practice mode on load
 
+## Reliability and privacy
+- **Disconnects:** the app detects Bluetooth drops and silent stalls, reconnects automatically where the browser allows, keeps your recording, and marks missing time (`gaps.csv`). See [docs/connection-help.md](docs/connection-help.md).
+- **Local only:** all acquisition, behavioral tasks, recording and analysis run in your browser. There is no backend, no database, no analytics, and nothing is uploaded. The app contains no network calls beyond loading its own files.
+- **Autosave:** recordings are checkpointed to the browser's IndexedDB (about every 5 s) so an accidental refresh can be recovered. Browser storage is not permanent — always download your data.
+
 ## Run locally
 ```bash
 npm install

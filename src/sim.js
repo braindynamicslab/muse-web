@@ -85,6 +85,9 @@ class PinkNoise {
 const TAU = Math.PI * 2
 
 export default class SimulatedMuse {
+  /** Test hook: the next N connect() calls fail, like a headset that is not yet ready to reconnect. */
+  static failNext = 0
+
   // ── MuseClient-compatible surface ────────────────────────────────────────
   enablePpg = false
   deviceName = 'MuseS-SIM'
@@ -113,6 +116,7 @@ export default class SimulatedMuse {
   }
 
   async connect() {
+    if (SimulatedMuse.failNext > 0) { SimulatedMuse.failNext--; throw new Error('Simulated: GATT connection attempt failed') }
     this._epochMs = Date.now()
     this._perf0 = performance.now()
     return true
@@ -144,11 +148,24 @@ export default class SimulatedMuse {
     if (this._timer) { clearInterval(this._timer); this._timer = null }
   }
 
+  // ── Test hooks (not part of the MuseClient surface): simulate Bluetooth trouble ──
+  /** The link drops: packets stop and `connectionStatus` goes false (what gattserverdisconnected does on a real Muse). */
+  dropLink() { if (this._timer) { clearInterval(this._timer); this._timer = null } this.connectionStatus.next(false) }
+  /** The stream silently stops while the link looks connected. soft=true → a resume() command revives it. */
+  stall(ms, soft = false) { this._stallUntil = performance.now() + ms; this._stallSoft = soft }
+  /** MuseClient.resume(): re-sends the "start streaming" command. */
+  async resume() { if (this._stallSoft) { this._stallUntil = 0; this._skipToNow() } }
+  _skipToNow() {
+    const e = this._elapsedS()
+    this._eegPackets = Math.floor((e * EEG_FS) / EEG_SPP); this._ppgPackets = Math.floor((e * PPG_FS) / PPG_SPP); this._imuPackets = Math.floor((e * IMU_FS) / IMU_SPP)
+  }
+
   // ── Packet pump ──────────────────────────────────────────────────────────
 
   _elapsedS() { return (performance.now() - this._perf0) / 1000 }
 
   _tick() {
+    if (this._stallUntil) { if (performance.now() < this._stallUntil) return; this._stallUntil = 0; this._skipToNow() }
     const elapsed = this._elapsedS()
     this._pump(elapsed, EEG_FS, EEG_SPP, '_eegPackets', (n0, ts, p) => this._emitEeg(n0, ts, p))
     this._pump(elapsed, PPG_FS, PPG_SPP, '_ppgPackets', (n0, ts, p) => this._emitPpg(n0, ts, p))

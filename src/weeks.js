@@ -32,6 +32,15 @@ WEEKS[4] = {
            <p><b>3. Compare</b>: the <b>Practice results</b> table (alpha at the ears, theta at the forehead, your ratings) and the <b>Mind-wandering windows</b> view (−10 s → press → +10 s, with a random-times control).</p>`,
 }
 
+WEEKS[5] = {
+  title: 'Week 5 · Attention, an intervention, and the arrow task',
+  behavioral: true,
+  layers: ['bands', 'spectrogram'],
+  channels: 'all',
+  banner: `<p><b>Guided lab (no headset needed):</b> a baseline arrow task → a 5-minute intervention (focused-attention meditation, physical exercise, Stroop training, or quiet rest) → the arrow task again. Use the <b>keyboard</b>: ← → (or F / J).</p>
+           <p><b>Explore EEG:</b> switch tabs at any time to use the Muse. Your connection and any recording are kept while you switch.</p>`,
+}
+
 export const CLAIMS = [
   { id: 'attention', name: 'Attention — “Beta = busy, active mind”',
     conditions: ['Quiet rest', 'Silent mental arithmetic'], band: 'beta', dir: 'up', channels: 'all',

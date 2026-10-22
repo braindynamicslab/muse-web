@@ -50,7 +50,7 @@ export class BandPipeline {
   }
   _reset() {
     this._buf = [0, 1, 2, 3].map(() => new Float32Array(EEG_BUF))   // circular analysis windows
-    this._n = 0
+    this._n = 0; this._valid = 0
     this._sq = 0; this._an = 0
     this._ap = { a: 0, b: -1.5 }; this._apWin = 0; this._apRefits = 0
     for (const b of BANDS) { this.bandPower[b] = 0; this.bandAbs[b] = -99 }
@@ -59,6 +59,8 @@ export class BandPipeline {
     this.quality = ['poor', 'poor', 'poor', 'poor']
   }
   reset() { this._reset() }
+  /** Samples stopped for a while (reconnect): don't analyse windows that straddle the gap. Keeps the 1/f model. */
+  markGap() { this._valid = 0; this._sq = 0; this._an = 0 }
   get ready() { return this._apRefits >= AP_MIN_REFITS }
   /** Seconds of warm-up left before band values appear (≈ AP_MIN_REFITS refits × 5 s). */
   get warmupFraction() { return Math.min(1, (this._apRefits * AP_UPDATE_INTERVAL + this._apWin) / (AP_MIN_REFITS * AP_UPDATE_INTERVAL)) }
@@ -67,11 +69,11 @@ export class BandPipeline {
   push(d) {
     const i = this._n % EEG_BUF
     for (let c = 0; c < 4; c++) this._buf[c][i] = Number.isNaN(d[c]) ? 0 : d[c]
-    this._n++
+    this._n++; this._valid++
     if (++this._sq >= 64) { this._sq = 0; if (!this.useExternalQuality) this._updateQuality() }
     if (++this._an >= EEG_BUF / 2) {
       this._an = 0
-      if (this._n >= EEG_BUF) this._compute()
+      if (this._valid >= EEG_BUF) this._compute()
     }
   }
   _win(c) {   // chronological 256-sample window
