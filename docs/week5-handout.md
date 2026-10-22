@@ -27,14 +27,16 @@ Choose **one** intervention (your group decides — say why in your notebook):
 You can **Quit** at any time; the data so far are kept and can be downloaded.
 
 ## Read your results
-The table shows, for baseline and after: mean RT on **congruent** and **incongruent** trials (correct trials only), the **flanker effect**, overall RT, accuracy, and trials with no answer — and the **change** (after − baseline).
+You get three **summary cards** — **Flanker interference**, **overall reaction time**, and **accuracy** — each showing baseline → after → change, plus a note on whether the change is bigger than ordinary trial-to-trial noise. Below are two charts (reaction time by trial type; flanker interference with error bars) and an **All metrics** table: mean, median and variability (SD) of RT, accuracy for congruent and incongruent trials, and counts of correct, incorrect and unanswered trials. RT statistics use **correct trials only**.
 
-Questions for your notebook:
-1. Did your RT change? By how many milliseconds? Was accuracy affected (a *speed–accuracy trade-off*)?
-2. Did the flanker effect change?
-3. **Practice effect:** people usually get faster at a task just from doing it. How could you tell an intervention effect from a practice effect? (Hint: look at the *other* groups' interventions — especially quiet rest.)
-4. One person, 60 trials per test: how much would you trust a 20 ms change? What would you need to be more confident?
-5. Which intervention would you expect to help most, and does the class's pooled evidence agree? (Bring your result card.)
+Questions for your notebook (they also appear on screen under **Think about it**):
+1. **Speed or accuracy?** Did RT and accuracy move together? Faster but less accurate is a *speed–accuracy trade-off*, not a clear improvement.
+2. **Practice or intervention?** You did the task twice. How much of any change could be practice, boredom or tiredness? How would other groups' results — especially quiet rest — help you tell?
+3. **How far can you go?** What would you need (control group, many participants, a delay before retesting, a different task) to say the intervention *caused* the change?
+
+**An immediate change after five minutes does not show lasting attention training or transfer to other tasks.** It is one person and 60 trials per test.
+
+When you're done, press **Continue to Your Muse Project →** to switch to the EEG dashboard; your results stay available under the **Guided lab** tab.
 
 ## If something goes wrong
 | Problem | Fix |

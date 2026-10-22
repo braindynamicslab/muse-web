@@ -34,15 +34,23 @@ export function makeStroopTrial(rand = Math.random) {
 // ---------- pure: scoring and summaries ----------
 const mean = (a) => (a.length ? a.reduce((s, v) => s + v, 0) / a.length : null)
 const median = (a) => { if (!a.length) return null; const s = [...a].sort((x, y) => x - y), m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2 }
-/** Per congruency + overall: trials, accuracy (of answered trials), omissions, mean/median RT of CORRECT trials (ms). */
+const sd = (a) => { if (a.length < 2) return null; const m = mean(a); return Math.sqrt(a.reduce((s, v) => s + (v - m) ** 2, 0) / (a.length - 1)) }
+/** Per congruency + overall. RT statistics use CORRECT trials only.
+ *  answered = trials with a response; accuracy = correct ÷ answered; omissions = no response within the deadline.
+ *  sdRt = standard deviation of correct RTs (trial-to-trial variability); seRt = sdRt / √(correct trials) — the
+ *  uncertainty of the mean RT, used to judge whether a change is larger than ordinary trial-to-trial noise. */
 export function summarize(trials) {
   const out = {}
   for (const key of ['congruent', 'incongruent', 'all']) {
     const t = trials.filter((x) => key === 'all' || x.congruency === key), answered = t.filter((x) => !x.timeout)
     const correct = answered.filter((x) => x.correct), rts = correct.map((x) => x.rt_ms)
-    out[key] = { n: t.length, answered: answered.length, omissions: t.length - answered.length, accuracy: answered.length ? correct.length / answered.length : null, meanRt: mean(rts), medianRt: median(rts) }
+    const sdRt = sd(rts)
+    out[key] = { n: t.length, answered: answered.length, omissions: t.length - answered.length, correct: correct.length, errors: answered.length - correct.length,
+      accuracy: answered.length ? correct.length / answered.length : null, meanRt: mean(rts), medianRt: median(rts), sdRt, seRt: sdRt != null ? sdRt / Math.sqrt(rts.length) : null,
+      seAcc: answered.length ? Math.sqrt(((correct.length / answered.length) * (1 - correct.length / answered.length)) / answered.length) : null }
   }
   out.effect = out.congruent.meanRt != null && out.incongruent.meanRt != null ? out.incongruent.meanRt - out.congruent.meanRt : null   // flanker / Stroop interference (ms)
+  out.effectSe = out.congruent.seRt != null && out.incongruent.seRt != null ? Math.hypot(out.congruent.seRt, out.incongruent.seRt) : null
   return out
 }
 

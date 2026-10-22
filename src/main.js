@@ -1338,6 +1338,7 @@ if (isBeh) {
   document.querySelectorAll('#mode-tabs button').forEach((b) => b.addEventListener('click', () => setMode(b.dataset.mode)))
   $('beh-start').addEventListener('click', startBeh)
   $('beh-download').addEventListener('click', () => week5.download())
+  $('beh-continue').addEventListener('click', () => { setMode('explore'); window.scrollTo(0, 0) })
   $('beh-card').addEventListener('click', () => week5.card())
   $('task-abort').addEventListener('click', () => week5.abort())
   document.addEventListener('week5-change', () => updateExpBar(true))

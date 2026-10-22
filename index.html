@@ -62,7 +62,7 @@
 </div>
 
 <div id="task" hidden>
-  <div id="task-top"><span id="task-title"></span><span id="task-progress"></span><button id="task-abort">Quit</button></div>
+  <div id="task-top"><span id="task-title"></span><span id="task-step"></span><span id="task-progress"></span><button id="task-abort">Quit</button></div>
   <div id="task-stage"></div>
   <div id="task-foot"></div>
 </div>
@@ -90,10 +90,28 @@
       <div class="rec-row"><button id="beh-start" class="primary">▶ Start experiment</button><span class="sub">About 12 minutes. Needs no headset. Use the keyboard: arrow keys (or F / J).</span></div>
     </div>
     <div id="beh-results" hidden>
-      <div class="panel-head"><h2>Results</h2><div class="spacer"></div><button id="beh-card">Save results card (.png)</button><button id="beh-download" class="primary">Download data (.zip)</button></div>
-      <div id="beh-table"></div>
-      <canvas id="cv-beh"></canvas>
-      <div id="beh-note" class="sub"></div>
+      <div id="beh-continue-bar" hidden>
+        <div><b>Nice work — that's the behavioral part.</b><div class="sub">Your results stay here (use the “Guided lab” tab to come back).</div></div>
+        <button id="beh-continue" class="primary big">Continue to Your Muse Project →</button>
+      </div>
+      <div class="panel-head"><h2>Your results</h2><span class="sub">baseline → after the intervention</span><div class="spacer"></div><button id="beh-card">Save results card (.png)</button><button id="beh-download" class="primary">Download data (.zip)</button></div>
+      <div id="beh-after-missing" class="sub" hidden>The second arrow task was not completed, so only the baseline is shown.</div>
+      <div id="beh-cards"></div>
+      <div id="beh-stroop" class="sub" hidden></div>
+      <div class="beh-charts"><div><canvas id="cv-beh"></canvas></div><div><canvas id="cv-beh2"></canvas></div></div>
+      <details id="beh-detail" open><summary>All metrics</summary>
+        <div id="beh-table"></div>
+        <div class="sub">RT = reaction time. Mean, median and variability use <b>correct trials only</b>. <b>Accuracy</b> = correct ÷ trials answered. <b>No answer</b> = no key within 1.5 s. <b>Flanker interference</b> = mean RT on incongruent trials − mean RT on congruent trials: how much the distracting arrows slowed you down. “Trial-to-trial noise” is the standard error of the averages — changes smaller than about twice that are unclear.</div>
+      </details>
+      <div id="beh-reflect">
+        <h3>Think about it</h3>
+        <ol>
+          <li><b>Speed or accuracy?</b> Did your reaction time and accuracy move in the same direction? Getting faster while making more mistakes is a <i>speed–accuracy trade-off</i>, not a clear improvement.</li>
+          <li><b>Practice or intervention?</b> You did the task twice. How much of any change could come from practice, boredom or tiredness? How would the other groups' results (especially quiet rest) help you tell?</li>
+          <li><b>How far can you go?</b> What would you need — a control group, many participants, a delay before retesting, a different task — before saying the intervention <i>caused</i> the change?</li>
+        </ol>
+        <p class="sub"><b>Important:</b> a change straight after five minutes does not show lasting attention training, and it does not show transfer to other tasks or to everyday life. It is one person, 60 trials per test.</p>
+      </div>
     </div>
   </section>
 
