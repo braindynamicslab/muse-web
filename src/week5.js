@@ -20,7 +20,7 @@ const sgn = (v, f) => (v == null ? '–' : `${v > 0 ? '+' : ''}${f(v)}`)
 export function createWeek5({ $, choose, setBusy }) {
   const blank = () => ({ participant: '', intervention: '', phase: 'setup', stepIndex: 0, running: false, done: false, aborted: false, exported: false,
     startedAt: null, endedAt: null, times: {}, practice: [], baseline: [], post: [], stroop: [], beep: false })
-  let st = blank(), ctl = null
+  let st = blank(), ctl = null, forcedSetup = false
   const ui = { get stage() { return $('task-stage') }, setTitle: (t) => { $('task-title').textContent = t }, setProgress: (t) => { $('task-progress').textContent = t }, setFoot: (h) => { $('task-foot').innerHTML = h } }
 
   const persist = () => { try { localStorage.setItem(KEY, JSON.stringify({ ...st, savedAt: Date.now() })) } catch { /* private window */ } }
@@ -76,6 +76,7 @@ export function createWeek5({ $, choose, setBusy }) {
       if (c === 'dl') { download(); return }
       if (c !== 'new') return
     }
+    forcedSetup = false
     st = blank(); st.participant = setup.participant; st.intervention = setup.intervention; st.beep = !!setup.beep
     st.startedAt = Date.now(); st.running = true; stamp('start'); persist(); render()
     ctl = new AbortController()
@@ -121,6 +122,7 @@ export function createWeek5({ $, choose, setBusy }) {
     const panel = $('beh-status'); if (!panel) return
     const rows = resultRows(), res = $('beh-results')
     res.hidden = !rows
+    $('beh-setup').hidden = !!rows && !forcedSetup && !st.running      // results shown: collapse the setup form ("Run again" brings it back)
     if (rows) {
       $('beh-table').innerHTML = '<table><tr><th></th><th>congruent RT</th><th>incongruent RT</th><th>flanker effect</th><th>overall RT</th><th>accuracy</th><th>no answer</th></tr>' +
         rows.map((r) => r.delta
@@ -136,18 +138,35 @@ export function createWeek5({ $, choose, setBusy }) {
   function drawChart() {
     const cv = $('cv-beh'); if (!cv) return
     const dpr = window.devicePixelRatio || 1, w = cv.clientWidth, h = cv.clientHeight; if (!w) return
-    cv.width = w * dpr; cv.height = h * dpr; const g = cv.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, w, h)
-    const s = S(), groups = [['baseline', 'Baseline', '#8b95a8'], ['post', 'After', '#4da3ff']]
-    const vals = [s.baseline.congruent.meanRt, s.baseline.incongruent.meanRt, s.post.congruent.meanRt, s.post.incongruent.meanRt].filter((v) => v != null)
+    cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr)
+    const g = cv.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, w, h)
+    const s = S(), series = [['baseline', 'Baseline', '#8b95a8'], ['post', 'After the intervention', '#4da3ff']], conds = [['congruent', 'congruent trials'], ['incongruent', 'incongruent trials']]
+    const vals = series.flatMap(([k]) => conds.map(([c]) => s[k][c].meanRt)).filter((v) => v != null)
     if (!vals.length) return
-    const hi = Math.max(...vals) * 1.15, lo = 0, L = 44, bw = 54, y = (v) => h - 26 - ((v - lo) / (hi - lo)) * (h - 44)
-    g.font = '12px sans-serif'; g.fillStyle = '#8b95a8'; g.fillText('mean reaction time (ms), correct trials', 6, 12)
-    ;[['congruent', 'congruent'], ['incongruent', 'incongruent']].forEach(([k, lab], ci) => {
-      const x0 = L + ci * (bw * 2 + 70)
-      groups.forEach(([gk, gl, col], gi) => { const v = s[gk][k].meanRt; if (v == null) return; g.fillStyle = col; g.fillRect(x0 + gi * (bw + 6), y(v), bw, h - 26 - y(v)); g.fillStyle = '#e6e9ef'; g.fillText(String(Math.round(v)), x0 + gi * (bw + 6) + 14, y(v) - 4) })
-      g.fillStyle = '#8b95a8'; g.fillText(lab, x0 + 6, h - 8)
+    const top = 36, bottom = 34, left = 56, right = 24, hi = Math.ceil((Math.max(...vals) * 1.15) / 100) * 100
+    const y = (v) => top + (1 - v / hi) * (h - top - bottom)
+    g.font = '13px sans-serif'; g.fillStyle = '#c9d1e0'; g.fillText('Mean reaction time (ms), correct trials only', left, 18)
+    // legend, right-aligned inside the chart: [square] label   [square] label
+    g.font = '13px sans-serif'
+    const widths = series.map(([, name]) => g.measureText(name).width), total = widths.reduce((acc, v) => acc + v + 16 + 22, -22)
+    let lx = w - right - total
+    series.forEach(([, name, col], i) => { g.fillStyle = col; g.fillRect(lx, 8, 11, 11); g.fillStyle = '#c9d1e0'; g.fillText(name, lx + 16, 18); lx += widths[i] + 16 + 22 })
+    // gridlines + y labels
+    g.strokeStyle = '#1f2633'; g.fillStyle = '#8b95a8'; g.font = '12px sans-serif'
+    for (let i = 0; i <= 4; i++) { const v = (hi * i) / 4, yy = y(v); g.beginPath(); g.moveTo(left, yy); g.lineTo(w - right, yy); g.stroke(); g.textAlign = 'right'; g.fillText(String(Math.round(v)), left - 8, yy + 4) }
+    g.textAlign = 'left'
+    const plotW = w - left - right, groupW = plotW / conds.length, bw = Math.min(90, groupW / 4)
+    conds.forEach(([c, label], ci) => {
+      const gx = left + ci * groupW + groupW / 2
+      series.forEach(([k, , col], si) => {
+        const v = s[k][c].meanRt; if (v == null) return
+        const x = gx + (si - 1) * (bw + 8) + 4
+        g.fillStyle = col; g.fillRect(x, y(v), bw, h - bottom - y(v))
+        g.fillStyle = '#e6e9ef'; g.font = '13px sans-serif'; g.textAlign = 'center'; g.fillText(String(Math.round(v)), x + bw / 2, y(v) - 6)
+      })
+      g.fillStyle = '#c9d1e0'; g.font = '13px sans-serif'; g.textAlign = 'center'; g.fillText(label, gx, h - 12)
     })
-    g.fillStyle = '#8b95a8'; g.fillRect(w - 150, 10, 10, 10); g.fillText('Baseline', w - 135, 19); g.fillStyle = '#4da3ff'; g.fillRect(w - 150, 26, 10, 10); g.fillText('After', w - 135, 35)
+    g.textAlign = 'left'
   }
 
   // ---------- export ----------
@@ -197,5 +216,6 @@ export function createWeek5({ $, choose, setBusy }) {
   function adopt(d) { st = { ...blank(), ...d, running: false }; render(); document.dispatchEvent(new CustomEvent('week5-change')) }
 
   return { get state() { return st }, start, abort, download, card, render, recover, adopt, hasUnfinished, hasData, drawChart,
+    showSetup() { forcedSetup = true; render(); $('beh-who').focus() },
     clearStored() { try { localStorage.removeItem(KEY) } catch { /* ignore */ } } }
 }

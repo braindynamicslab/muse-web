@@ -1358,7 +1358,7 @@ function expContext() {
       title: weekCfg.title, steps: W5_STEPS, done: s.done, cur: s.done ? 4 : s.running || s.startedAt ? s.stepIndex : 0,
       sub: s.running ? 'Running — follow the instructions on screen.' : s.done ? 'Complete — save your results.' : s.aborted ? 'Stopped early — you can still download the partial data.' : 'Enter initials, choose an intervention, then start.',
       primary: s.running ? { text: 'Quit', act: () => week5.abort() } : has ? { text: '⬇ Download data (.zip)', act: () => week5.download() } : { text: '▶ Start experiment', act: startBeh },
-      secondary: !s.running && has ? { text: '▶ Run again', act: startBeh } : null,
+      secondary: !s.running && has ? { text: '▶ Run again', act: () => week5.showSetup() } : null,
     }
   }
   const st = link.state, blocksDone = rec.blocks.some((b) => b.t1 != null), recording = seq.active || rec.current !== null
