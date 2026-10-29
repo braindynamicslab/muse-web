@@ -7,6 +7,7 @@ import { SampleClock } from '../src/clock.js'
 import { MuseLink, BACKOFF_MS } from '../src/link.js'
 import SimulatedMuse from '../src/sim.js'
 import { zipSamples } from 'muse-js'
+import { compare, TASKS as PJ_TASKS, INTERVENTIONS as PJ_IVS } from '../src/project.js'
 import { makeFlankerTrials, makeStroopTrial, summarize, trialsToCsv, shuffle } from '../src/behavior.js'
 
 let pass = 0, fail = 0
@@ -116,6 +117,18 @@ console.log('--- connection manager (link.js) with the simulated headset')
   link.userDisconnect(); await sleep(300); const before = samples; await sleep(600)
   ok('user disconnect stops the stream and never auto-reconnects', link.state === 'idle' && samples === before)
   clearInterval(link._wd)
+}
+
+console.log('--- project (project.js)')
+{
+  const mk = (c, rt) => ({ congruency: c, correct: true, rt_ms: rt, timeout: false })
+  const pre = [...[400, 410, 420, 430].map((r) => mk('congruent', r)), ...[500, 510, 520, 530].map((r) => mk('incongruent', r))]
+  const post = pre.map((t) => ({ ...t, rt_ms: t.rt_ms - 50 }))
+  const c = compare(pre, post, 'Flanker interference')
+  ok('compare: RT change is -50 ms', near(c.rows[1].delta, -50, 1e-9) && c.rows[1].dir === 'down')
+  ok('compare: unchanged interference is "same"', c.rows[0].dir === 'same')
+  ok('compare: no post data gives null deltas', compare(pre, [], 'x').rows[1].delta === null)
+  ok('post task is always the pre task (one task field)', Object.keys(PJ_TASKS).includes('flanker') && 'imagery' in PJ_IVS)
 }
 
 console.log(`\n${pass} passed, ${fail} failed`)

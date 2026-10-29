@@ -165,6 +165,9 @@ button.linklike{background:none;border:0;color:var(--accent);padding:0 4px;text-
 #mode-tabs{display:flex;gap:4px;margin-left:12px}#mode-tabs button{border-radius:16px;padding:4px 14px}#mode-tabs button.on{background:var(--accent);color:#08121f;border-color:var(--accent);font-weight:700}
 body.beh.mode-guided main > :not(#panel-behavior){display:none !important}
 body.beh.mode-explore #panel-behavior{display:none !important}
+body.proj.mode-guided main > :not(#panel-project){display:none !important}
+body.proj.mode-explore #panel-project{display:none !important}
+body.proj.mode-guided main{grid-template-rows:auto;align-content:start}
 /* behavioral task overlay */
 #task{position:fixed;inset:0;background:#0b0e14;z-index:35;display:flex;flex-direction:column}
 #task-top{display:flex;align-items:center;gap:20px;padding:14px 22px;color:var(--dim);font-size:17px}#task-title{color:var(--fg);font-weight:600}#task-progress{margin-left:auto;font-variant-numeric:tabular-nums}
@@ -206,3 +209,13 @@ button.big{font-size:18px;padding:12px 22px}
 #beh-reflect{margin-top:16px;border-top:1px solid var(--line);padding-top:10px}#beh-reflect h3{margin:0 0 6px;font-size:16px}#beh-reflect li{margin:6px 0;line-height:1.45}
 #task-step{margin-left:auto;color:var(--dim);font-size:14px}#task-top #task-progress{margin-left:18px}
 @media (max-width:1000px){#beh-cards{grid-template-columns:1fr}.beh-charts{grid-template-columns:1fr}}
+
+/* My Project (Week 6) */
+#panel-project{grid-column:1 / -1;max-width:1200px;justify-self:center;width:100%}
+.proj-grid{display:flex;flex-wrap:wrap;gap:12px 20px;margin:8px 0}.proj-grid label,.proj-hyp{display:flex;flex-direction:column;gap:4px;font-size:13px;color:var(--dim)}
+.proj-hyp textarea{width:100%;max-width:760px;background:#10151d;color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:6px 8px;font:inherit}
+.proj-cards{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin:10px 0 12px}
+.proj-table table{border-collapse:collapse;width:100%;font-size:14px;font-variant-numeric:tabular-nums}.proj-table th,.proj-table td{padding:6px 10px;border-bottom:1px solid var(--line);text-align:right}.proj-table th:nth-child(-n+5),.proj-table td:nth-child(-n+5){text-align:left}
+#proj-continue-bar{display:flex;align-items:center;gap:16px;justify-content:space-between;flex-wrap:wrap;background:#12351f;border:1px solid var(--good);border-radius:10px;padding:12px 16px;margin-bottom:14px}
+#proj-recover{background:#12351f;border:1px solid var(--good);border-radius:8px;padding:8px 12px;margin-bottom:10px}
+@media (max-width:1000px){.proj-cards{grid-template-columns:1fr}}

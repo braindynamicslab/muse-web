@@ -7,6 +7,7 @@ import { SampleClock } from './clock.js'
 import { MuseLink, BACKOFF_MS } from './link.js'
 import * as store from './store.js'
 import { createWeek5, STEPS as W5_STEPS } from './week5.js'
+import { createProject, STEPS as PJ_STEPS, TASKS as PJ_TASKS, INTERVENTIONS as PJ_IVS } from './project.js'
 import { WEEKS, CLAIMS, BAND_BINS, BAND_NAMES, SCRIPTS, RATINGS } from './weeks.js'
 import { slidingSpectra, bandSeries, motionSeries, epochsAround, meanEpoch, permutationBand, STEP_S, NF as EV_NF } from './events.js'
 import { psd, derive, alphaMetrics, bandMetrics, meanPsd, peakAbove, peakLabel, FREQS, NF, DF, REFERENCES, ELECTRODES } from './spectrum.js'
@@ -208,7 +209,7 @@ $('btn-link-dl').addEventListener('click', () => downloadZip())
 $('btn-reconnect2').addEventListener('click', () => $('btn-reconnect').click())
 setInterval(renderLinkBanner, 500)
 window.addEventListener('pagehide', () => link.shutdown())           // free the headset so a refreshed page can connect at once
-window.addEventListener('beforeunload', (e) => { const w5 = week5 && (week5.state.running || (week5.hasData() && !week5.state.exported)); if ((rec.rows.length > FS * 10 && rec.exportedAt < rec.rows.length) || w5) { e.preventDefault(); e.returnValue = '' } })
+window.addEventListener('beforeunload', (e) => { const w5 = (week5 && (week5.state.running || (week5.hasData() && !week5.state.exported))) || (project && (project.state.running || project.anyUnsaved())); if ((rec.rows.length > FS * 10 && rec.exportedAt < rec.rows.length) || w5) { e.preventDefault(); e.returnValue = '' } })
 
 function setStatus(msg, on = false) { const el = $('status'); el.textContent = msg; el.classList.toggle('on', on) }
 function resetData() {
@@ -1279,12 +1280,8 @@ function drawEventsPanel() {
 for (const id of ['ev-block', 'ev-ch']) $(id).addEventListener('change', () => { evp.key = '' })
 
 const csvQuote = (s) => (/[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s)
-function downloadZip() {
-  if (!rec.rows.length) return
-  const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
-  const who = ($('participant').value || '').trim().replace(/[^\w-]+/g, '')
-  const tag = `muse-${who ? who + '-' : ''}${simulated ? 'practice-' : ''}${stamp}`
-  const f3 = (v) => v.toFixed(3)
+function eegFiles(tag) {
+  if (!rec.rows.length) return []
   const files = [
     { name: `${tag}/eeg.csv`, text: 'time_s,TP9,AF7,AF8,TP10,condition\n' + rec.rows.map((r) => `${(r[0] / 1000).toFixed(4)},${r[1].toFixed(2)},${r[2].toFixed(2)},${r[3].toFixed(2)},${r[4].toFixed(2)},${csvQuote(r[5])}`).join('\n') + '\n' },
     { name: `${tag}/bands.csv`, text: 'time_s,rel_delta,rel_theta,rel_alpha,rel_beta,rel_gamma,abs_delta_dB,abs_theta_dB,abs_alpha_dB,abs_beta_dB,abs_gamma_dB,rel_ready,channels,condition\n' + rec.bandRows.map((r) => `${(r.t / 1000).toFixed(3)},${r.vals.map((v) => v.toFixed(4)).join(',')},${r.abs.map((v) => v.toFixed(2)).join(',')},${r.ready ? 1 : 0},${r.ch},${csvQuote(r.cond)}`).join('\n') + '\n' },
@@ -1300,6 +1297,14 @@ function downloadZip() {
   ]
   rec.exportedAt = rec.rows.length
   if (rec.sid) store.markExported(rec.sid, rec.rows.length).catch(() => {})
+  return files
+}
+function downloadZip() {
+  if (!rec.rows.length) return
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
+  const who = ($('participant').value || '').trim().replace(/[^\w-]+/g, '')
+  const tag = `muse-${who ? who + '-' : ''}${simulated ? 'practice-' : ''}${stamp}`
+  const files = eegFiles(tag)
   const a = document.createElement('a'); a.href = URL.createObjectURL(makeZip(files)); a.download = `${tag}.zip`; a.click()
   setTimeout(() => URL.revokeObjectURL(a.href), 4000)
 }
@@ -1319,12 +1324,13 @@ renderConditionButtons()
 const isBeh = !!weekCfg?.behavioral
 let mode = isBeh ? 'guided' : 'eeg'
 let week5 = null
+let project = null
 const expState = { sig: '', primary: null, secondary: null }
 function setMode(m) {
   mode = m
   document.body.classList.toggle('mode-guided', m === 'guided'); document.body.classList.toggle('mode-explore', m === 'explore')
   document.querySelectorAll('#mode-tabs button').forEach((b) => b.classList.toggle('on', b.dataset.mode === m))
-  if (m === 'guided') setTimeout(() => week5?.drawChart(), 60)
+  if (m === 'guided') setTimeout(() => { week5?.drawChart(); project?.render() }, 60)
   updateExpBar(true)
 }
 function startBeh() {
@@ -1352,7 +1358,70 @@ if (isBeh) {
   }
   setMode('guided'); week5.render()
 }
+const isProj = !!weekCfg?.project
+const projectHooks = {
+  eegLive: () => connected && link.state === 'streaming',
+  phaseStart: (label) => { if (!projectHooks.eegLive()) return false; if (rec.current) endBlock(); rec.selected = label; startBlock(0); return rec.current === label },
+  phaseEnd: () => { if (rec.current) endBlock() },
+  eegFiles: (tag) => eegFiles(tag),
+  eegStats: (label) => {
+    const rows = rec.bandRows.filter((r) => r.cond === label && r.ready); if (rows.length < 3) return null
+    const t0 = rows[0].t, use = rows.filter((r) => r.t - t0 >= 5000); if (use.length < 3) return null
+    const m = (i) => use.reduce((a, r) => a + r.abs[i], 0) / use.length
+    return { seconds: (use[use.length - 1].t - t0) / 1000, theta: m(1), alpha: m(2), beta: m(3) }
+  },
+}
+function projUnit() {
+  const t = PJ_TASKS[$('proj-task').value]; $('proj-amount-label').textContent = t.unit === 'trials' ? 'Trials' : 'Seconds'
+  $('proj-amount').value = t.def; projEstimate()
+}
+function projEstimate() {
+  const t = PJ_TASKS[$('proj-task').value], a = +$('proj-amount').value || t.def, taskMin = (t.unit === 'trials' ? a * 1.8 / 60 : a / 60), iv = +$('proj-min').value || 0
+  $('proj-estimate').textContent = `About ${Math.round(2 * taskMin + iv + 1)} minutes in total (estimate; no limits are enforced).`
+}
+function startProj() {
+  const who = $('proj-who').value.trim()
+  if (!who) { $('proj-status').textContent = 'Enter the participant’s initials first.'; $('proj-who').focus(); return }
+  if (project.state.running) return
+  project.start({ participant: who, group: $('proj-group').value.trim(), hypothesis: $('proj-hypothesis').value.trim(), task: $('proj-task').value, amount: $('proj-amount').value,
+    intervention: $('proj-iv').value, ivMinutes: $('proj-min').value, beep: $('proj-beep').checked })
+}
+if (isProj) {
+  project = createProject({ $, choose, hooks: projectHooks })
+  document.body.classList.add('proj'); $('mode-tabs').hidden = false; $('panel-project').hidden = false
+  $('mode-tabs').querySelector('[data-mode="guided"]').textContent = 'My Project'
+  document.querySelectorAll('#mode-tabs button').forEach((b) => b.addEventListener('click', () => setMode(b.dataset.mode)))
+  $('proj-task').innerHTML = Object.entries(PJ_TASKS).map(([k, t]) => `<option value="${k}">${t.name}</option>`).join('')
+  $('proj-iv').innerHTML = Object.entries(PJ_IVS).map(([k, t]) => `<option value="${k}">${t.name}</option>`).join('')
+  $('proj-iv').value = 'imagery'
+  $('proj-task').addEventListener('change', projUnit); $('proj-amount').addEventListener('input', projEstimate); $('proj-min').addEventListener('input', projEstimate)
+  projUnit()
+  $('proj-start').addEventListener('click', startProj)
+  $('proj-again').addEventListener('click', () => { project.showSetup(); window.scrollTo(0, 0) })
+  $('proj-download').addEventListener('click', () => project.download())
+  $('task-abort').addEventListener('click', () => project.abort())
+  document.addEventListener('project-change', () => updateExpBar(true))
+  const old = project.recover()
+  if (old) {
+    $('proj-recover').hidden = false
+    $('proj-recover-text').innerHTML = `<b>Found unsaved project data</b> from this computer (${new Date(old.savedAt).toLocaleString()}, ${old.runs.length} run${old.runs.length > 1 ? 's' : ''}).`
+    $('proj-rec-dl').onclick = () => { project.adopt(old); project.download(); $('proj-recover').hidden = true }
+    $('proj-rec-load').onclick = () => { project.adopt(old); $('proj-recover').hidden = true }
+    $('proj-rec-discard').onclick = () => { if (confirm('Delete this saved project data from this computer? This cannot be undone.')) { project.clearStored(); $('proj-recover').hidden = true } }
+  }
+  setMode('guided'); project.render()
+  setInterval(() => { if (!project.state.running) project.render() }, 2000)
+}
 function expContext() {
+  if (isProj && mode === 'guided') {
+    const { cur, running } = project.state, has = project.hasData()
+    return {
+      title: weekCfg.title, steps: PJ_STEPS, done: !!cur?.done, cur: cur?.done ? 4 : running || cur?.startedAt ? cur.stepIndex : 0,
+      sub: running ? 'Running — follow the instructions on screen.' : cur?.done ? 'Run complete — run another participant or download.' : 'Design your experiment, enter initials, then start.',
+      primary: running ? { text: 'Quit', act: () => project.abort() } : has && cur?.done ? { text: '⬇ Download all runs (.zip)', act: () => project.download() } : { text: '▶ Start run', act: startProj },
+      secondary: !running && has && cur?.done ? { text: '▶ Run another', act: () => project.showSetup() } : null,
+    }
+  }
   if (isBeh && mode === 'guided') {
     const s = week5.state, has = week5.hasData()
     return {

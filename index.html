@@ -72,6 +72,41 @@
 </div>
 
 <main>
+  <section id="panel-project" class="panel" hidden>
+    <div class="panel-head"><h2>My Project</h2><span class="sub" id="proj-status">Ready.</span></div>
+    <div id="proj-recover" class="rec-banner" hidden><span id="proj-recover-text"></span> <button id="proj-rec-dl" class="primary">Download it (.zip)</button> <button id="proj-rec-load">Show results</button> <button id="proj-rec-discard">Discard</button></div>
+    <div id="proj-setup">
+      <p class="sub">Design a three-part experiment: <b>task → intervention → the same task again</b>. Use the keyboard for tasks (arrow keys or F / J; Stroop R G B Y).</p>
+      <div class="proj-grid">
+        <label>Task (before <i>and</i> after) <select id="proj-task"></select></label>
+        <label><span id="proj-amount-label">Trials</span> <input id="proj-amount" type="number" min="1" step="1" value="60" style="width:90px"></label>
+        <label>Intervention <select id="proj-iv"></select></label>
+        <label>Intervention length (minutes) <input id="proj-min" type="number" min="0.1" step="0.5" value="5" style="width:90px"></label>
+        <label>Participant <input id="proj-who" maxlength="12" placeholder="initials" style="width:100px"></label>
+        <label>Group <input id="proj-group" maxlength="24" placeholder="e.g. Group C" style="width:130px"></label>
+      </div>
+      <label class="proj-hyp">Your prediction (optional) <textarea id="proj-hypothesis" rows="2" placeholder="e.g. After imagery, RT will be faster and interference smaller, because…"></textarea></label>
+      <div class="rec-row"><label class="sub"><input type="checkbox" id="proj-beep"> beep when the intervention is over (off by default)</label><span class="sub" id="proj-headset"></span></div>
+      <div class="rec-row"><button id="proj-start" class="primary">▶ Start run</button><span class="sub" id="proj-estimate"></span></div>
+    </div>
+    <div id="proj-results" hidden>
+      <div id="proj-continue-bar" hidden>
+        <div><b>Run complete.</b><div class="sub">Run another participant, or download everything.</div></div>
+        <button id="proj-again" class="primary big">▶ Run another participant</button>
+      </div>
+      <div class="panel-head"><h2>Results</h2><span class="sub" id="proj-protocol"></span><div class="spacer"></div><button id="proj-download" class="primary">Download all runs (.zip)</button></div>
+      <div id="proj-hyp" class="sub" hidden></div>
+      <div id="proj-missing" class="sub" hidden>The second task was not completed, so only the first is shown.</div>
+      <div id="proj-cards" class="proj-cards"></div>
+      <div id="proj-eeg" hidden><h3>EEG by phase (absolute power, dB re 1 µV²)</h3><div id="proj-eeg-table" class="proj-table"></div><div class="sub">Chosen channels as in Explore EEG; one participant, one recording — compare phases cautiously.</div></div>
+      <h3>Runs in this session</h3><div id="proj-runs" class="proj-table"></div>
+      <div id="beh-reflect"><h3>Think about it</h3><ol>
+        <li><b>Practice or intervention?</b> The same task twice: how much could be practice, boredom or tiredness? What control (a quiet-rest group) would tell you?</li>
+        <li><b>One person is not a result.</b> What does your group's table show across participants?</li>
+        <li><b>Was your prediction right?</b> What would you change in the design next time?</li></ol></div>
+    </div>
+  </section>
+
   <section id="panel-behavior" class="panel" hidden>
     <div class="panel-head"><h2>Arrow-task experiment</h2><span class="sub" id="beh-status">Ready.</span></div>
     <div id="beh-recover" hidden><span id="beh-recover-text"></span> <button id="beh-rec-dl" class="primary">Download it (.zip)</button> <button id="beh-rec-load">Show results</button> <button id="beh-rec-discard">Discard</button></div>

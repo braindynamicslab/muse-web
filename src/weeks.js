@@ -41,6 +41,15 @@ WEEKS[5] = {
            <p><b>Explore EEG:</b> switch tabs at any time to use the Muse. Your connection and any recording are kept while you switch.</p>`,
 }
 
+WEEKS[6] = {
+  title: 'Week 6 · My Project',
+  project: true,
+  layers: ['bands', 'spectrogram', 'motion'],
+  channels: 'all',
+  banner: `<p><b>My Project:</b> design your own experiment — a <b>task</b> → an <b>intervention</b> → the <b>same task</b> again. Choose the task and the intervention, set how long each lasts, write your prediction, and run several participants from your group.</p>
+           <p><b>Headset optional:</b> if the Muse is connected (use <b>Explore EEG</b> to connect), each phase is also recorded as an EEG block. Without it you still get the behavioral data.</p>`,
+}
+
 export const CLAIMS = [
   { id: 'attention', name: 'Attention — “Beta = busy, active mind”',
     conditions: ['Quiet rest', 'Silent mental arithmetic'], band: 'beta', dir: 'up', channels: 'all',
