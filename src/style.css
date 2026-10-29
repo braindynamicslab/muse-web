@@ -219,3 +219,5 @@ button.big{font-size:18px;padding:12px 22px}
 #proj-continue-bar{display:flex;align-items:center;gap:16px;justify-content:space-between;flex-wrap:wrap;background:#12351f;border:1px solid var(--good);border-radius:10px;padding:12px 16px;margin-bottom:14px}
 #proj-recover{background:#12351f;border:1px solid var(--good);border-radius:8px;padding:8px 12px;margin-bottom:10px}
 @media (max-width:1000px){.proj-cards{grid-template-columns:1fr}}
+.stim-row{display:flex;align-items:center;gap:10px;margin:4px 0}.stim-row input{width:240px;background:#10151d;color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:4px 8px}
+#task-stage video{border-radius:8px}

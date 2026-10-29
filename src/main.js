@@ -7,7 +7,7 @@ import { SampleClock } from './clock.js'
 import { MuseLink, BACKOFF_MS } from './link.js'
 import * as store from './store.js'
 import { createWeek5, STEPS as W5_STEPS } from './week5.js'
-import { createProject, STEPS as PJ_STEPS, TASKS as PJ_TASKS, INTERVENTIONS as PJ_IVS } from './project.js'
+import { createProject, stimulusDesigner, STEPS as PJ_STEPS, STEPS_STIM as PJ_STEPS_STIM, TASKS as PJ_TASKS, INTERVENTIONS as PJ_IVS } from './project.js'
 import { WEEKS, CLAIMS, BAND_BINS, BAND_NAMES, SCRIPTS, RATINGS } from './weeks.js'
 import { slidingSpectra, bandSeries, motionSeries, epochsAround, meanEpoch, permutationBand, STEP_S, NF as EV_NF } from './events.js'
 import { psd, derive, alphaMetrics, bandMetrics, meanPsd, peakAbove, peakLabel, FREQS, NF, DF, REFERENCES, ELECTRODES } from './spectrum.js'
@@ -1376,13 +1376,21 @@ function projUnit() {
   $('proj-amount').value = t.def; projEstimate()
 }
 function projEstimate() {
+  if (isStim()) { const n = stim?.count() || 0; $('proj-estimate').textContent = n ? `${n} clip${n > 1 ? 's' : ''}; total length = clip lengths + ${n} × ${+$('stim-base').value || 0} s cross + rating time.` : 'Add at least one clip.'; return }
   const t = PJ_TASKS[$('proj-task').value], a = +$('proj-amount').value || t.def, taskMin = (t.unit === 'trials' ? a * 1.8 / 60 : a / 60), iv = +$('proj-min').value || 0
   $('proj-estimate').textContent = `About ${Math.round(2 * taskMin + iv + 1)} minutes in total (estimate; no limits are enforced).`
 }
+let stim = null
+const isStim = () => $('proj-kind').value === 'stimulus'
 function startProj() {
   const who = $('proj-who').value.trim()
   if (!who) { $('proj-status').textContent = 'Enter the participant’s initials first.'; $('proj-who').focus(); return }
   if (project.state.running) return
+  if (isStim()) {
+    if (!stim.count()) { $('proj-status').textContent = 'Add at least one video clip first.'; return }
+    project.start({ kind: 'stimulus', participant: who, group: $('proj-group').value.trim(), hypothesis: $('proj-hypothesis').value.trim(), clips: stim.clips(), baselineSec: stim.baselineSec(), randomize: stim.randomize() })
+    return
+  }
   project.start({ participant: who, group: $('proj-group').value.trim(), hypothesis: $('proj-hypothesis').value.trim(), task: $('proj-task').value, amount: $('proj-amount').value,
     intervention: $('proj-iv').value, ivMinutes: $('proj-min').value, beep: $('proj-beep').checked })
 }
@@ -1395,6 +1403,9 @@ if (isProj) {
   $('proj-iv').innerHTML = Object.entries(PJ_IVS).map(([k, t]) => `<option value="${k}">${t.name}</option>`).join('')
   $('proj-iv').value = 'imagery'
   $('proj-task').addEventListener('change', projUnit); $('proj-amount').addEventListener('input', projEstimate); $('proj-min').addEventListener('input', projEstimate)
+  stim = stimulusDesigner($)
+  $('proj-kind').addEventListener('change', () => { const st = isStim(); $('proj-stim').hidden = !st; $('proj-task-grid').hidden = st; projEstimate(); updateExpBar(true) })
+  $('stim-files').addEventListener('change', () => setTimeout(projEstimate, 400)); $('stim-base').addEventListener('input', projEstimate)
   projUnit()
   $('proj-start').addEventListener('click', startProj)
   $('proj-again').addEventListener('click', () => { project.showSetup(); window.scrollTo(0, 0) })
@@ -1412,11 +1423,12 @@ if (isProj) {
   setMode('guided'); project.render()
   setInterval(() => { if (!project.state.running) project.render() }, 2000)
 }
+function stepsNow(c) { return (c?.kind === 'stimulus' && c.startedAt && (project.state.running || c.done)) || (!project.state.running && !c?.startedAt && isStim()) ? PJ_STEPS_STIM : PJ_STEPS }
 function expContext() {
   if (isProj && mode === 'guided') {
     const { cur, running } = project.state, has = project.hasData()
     return {
-      title: weekCfg.title, steps: PJ_STEPS, done: !!cur?.done, cur: cur?.done ? 4 : running || cur?.startedAt ? cur.stepIndex : 0,
+      title: weekCfg.title, steps: stepsNow(cur), done: !!cur?.done, cur: cur?.done ? stepsNow(cur).length - 1 : running || cur?.startedAt ? cur.stepIndex : 0,
       sub: running ? 'Running — follow the instructions on screen.' : cur?.done ? 'Run complete — run another participant or download.' : 'Design your experiment, enter initials, then start.',
       primary: running ? { text: 'Quit', act: () => project.abort() } : has && cur?.done ? { text: '⬇ Download all runs (.zip)', act: () => project.download() } : { text: '▶ Start run', act: startProj },
       secondary: !running && has && cur?.done ? { text: '▶ Run another', act: () => project.showSetup() } : null,

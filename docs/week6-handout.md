@@ -17,3 +17,6 @@ Click **Explore EEG**, connect and check the contacts, then return to **My Proje
 
 ## Think about it
 Practice, tiredness and boredom can change the second test. What control would tell you? One participant is not a result — what does your group's table show?
+
+## Option B: watch clips and rate them
+Choose **Project type → Watch clips → rate each**. Add video files from this computer (download them beforehand; nothing is uploaded or streamed). Set the length of the fixation cross shown before each clip (the EEG baseline) and whether the order is random for each participant. Each participant sees: cross → clip → ratings (valence, arousal, engagement, 1–9, plus an optional note), for every clip. Results show a clip × ratings × EEG table (alpha power, and alpha/theta/beta change relative to the cross before the clip). Clips differ in more than emotion (brightness, motion, sound, length), so compare cautiously. The zip adds `stimuli.csv` and `ratings.csv` per run.
